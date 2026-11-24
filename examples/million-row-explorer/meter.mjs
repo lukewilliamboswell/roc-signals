@@ -61,6 +61,7 @@ class QueryMeter extends HTMLElement {
     }
     document.addEventListener("roc-signals:runtime", this.#onRuntime);
     this.#draw();
+    this.dispatchEvent(new CustomEvent("roc-signals:runtime-request", { bubbles: true, detail: runtime => this.#watch(runtime) }));
   }
 
   disconnectedCallback() {

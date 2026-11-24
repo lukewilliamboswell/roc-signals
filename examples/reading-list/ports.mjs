@@ -39,6 +39,16 @@ const transact = (mode, use) =>
 
 const readAll = () => transact("readonly", (books) => books.getAll());
 
+// Read and update in the same transaction. Shelf moves and detail edits can
+// arrive from different tabs, and a change racing a deletion leaves it deleted.
+const update = (id, fields) => transact("readwrite", (books) => {
+  const request = books.get(id);
+  request.onsuccess = () => {
+    if (request.result !== undefined) books.put({ ...request.result, ...fields });
+  };
+  return request;
+});
+
 // The `stored` subscriptions of this tab, and the channel on which every tab
 // of this origin announces that it wrote. After any write, here or in
 // another tab, each subscription receives the books as a fresh transaction
@@ -77,8 +87,12 @@ export default {
   // the console and the mount's onPortFault, never the app, so whether or
   // not the write happened, this tab is sent the books as stored: a write
   // that failed is undone on the page too.
-  [`${NS}/put`]: {
-    command: (book) => transact("readwrite", (books) => books.put(book)).finally(written),
+  [`${NS}/move`]: {
+    command: ({ id, shelf }) => update(id, { shelf }).finally(written),
+  },
+
+  [`${NS}/edit`]: {
+    command: ({ id, title, author }) => update(id, { title, author }).finally(written),
   },
 
   [`${NS}/remove`]: {

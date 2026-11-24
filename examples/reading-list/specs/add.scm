@@ -32,7 +32,7 @@
     (expect-port-call 5 "roc-signals.example/reading-list/add" "{\"added_ms\":\"1731200000500\",\"author\":\"\",\"id\":\"b-044c3cd7f43c661c\",\"shelf\":\"WantToRead\",\"title\":\"Dune\"}")
     (answer-port 5 reply "{\"added_ms\":\"1731200000500\",\"author\":\"\",\"id\":\"b-044c3cd7f43c661c\",\"shelf\":\"WantToRead\",\"title\":\"Dune\"}")
     (expect-text (test-id "status") "2 books")
-    (expect-text (label "Books") "DuneUnknown authorWant to readStartRemoveDuneFrank HerbertWant to readStartRemove")
+    (expect-text (label "Books") "DuneUnknown authorWant to readStartRemoveEditDuneFrank HerbertWant to readStartRemoveEdit")
     (expect-text (test-id "note") "")
   )
 )

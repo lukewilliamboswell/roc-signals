@@ -156,7 +156,7 @@ editor = |props, { key, field }| {
 							Html.dialog(
 								"Field settings",
 								{ open: settings.signal(), on_close: settings.set_value(|_open, showing| showing) },
-								[Html.aria_label_s(local_name("Settings")), Engine.test_id_s(local_key.map(|number| "settings-${Form.id_of(number)}")), Engine.class("panel w-full max-w-md p-5")],
+								[Engine.test_id_s(local_key.map(|number| "settings-${Form.id_of(number)}")), Engine.class("panel w-full max-w-md p-5")],
 								[
 									Html.div(
 										"grid gap-4",

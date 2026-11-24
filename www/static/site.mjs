@@ -85,14 +85,23 @@ const parsed = new Promise((resolve) => {
 // example's custom element, say) needs only to listen for it.
 async function announce(root, runtime) {
   await parsed;
+  // A deferred custom element can connect after this one-time announcement.
+  root.addEventListener("roc-signals:runtime-request", event => event.detail(runtime), { signal: runtimeAnnouncementSignal(root) });
   root.dispatchEvent(new CustomEvent("roc-signals:runtime", { bubbles: true, detail: { runtime } }));
 }
 
+const runtimeAnnouncements = new WeakMap();
+function runtimeAnnouncementSignal(root) {
+  runtimeAnnouncements.get(root)?.abort();
+  const controller = new AbortController();
+  runtimeAnnouncements.set(root, controller);
+  return controller.signal;
+}
+
 async function mountInto(root, wasmUrl, title, errorTarget = null) {
-  // A root marked `data-roc-picture` holds a built first page, which the
-  // runtime keeps inert and replaces with the mount; any other root is
-  // emptied, as an earlier app may have left nodes in it.
-  if (!root.hasAttributeNS(null, "data-roc-picture")) root.replaceChildren();
+  // Keep the producer's frame for binding. A plain mount may reuse a root
+  // where an earlier app left nodes.
+  if (!root.hasAttributeNS(null, "data-roc-frame") && !root.hasAttributeNS(null, "data-roc-picture")) root.replaceChildren();
   if (errorTarget) {
     errorTarget.hidden = true;
     errorTarget.classList.add("hidden");
@@ -157,6 +166,7 @@ function setupUpload() {
   };
 
   const cleanupUploaded = () => {
+    runtimeAnnouncements.get(root)?.abort();
     uploadedRuntime?.unmount();
     uploadedRuntime = null;
     if (uploadedObjectUrl) {

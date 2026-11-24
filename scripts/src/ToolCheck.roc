@@ -184,13 +184,23 @@ ToolCheck := [].{
 				Path.write_utf8!(Path.utf8("${lab}/public/robots.txt"), "User-agent: *\n")?
 				page = Path.read_utf8!(Path.utf8("${lab}/index.html"))?
 				Path.write_utf8!(Path.utf8("${lab}/index.html"), page.replace_first("</head>", "<link rel=\"stylesheet\" href=\"style.css\"></head>"))?
-				$problems = $problems.concat(judge(run_tool!(tool, lab, ["build"])?, { code: 1, says: ["Engine.program_startup", "--no-prerender"] }))
+				# The job-only fixture uses a fresh-only program. Worker Lab now
+				# declares a first frame and must build by default.
+				lab_main = Path.read_utf8!(Path.utf8("${lab}/main.roc"))?
+				fresh_only = Path.read_utf8!(Path.utf8("${o.root}/tests/apps/dbg-job-only/main.roc"))?
+				Path.write_utf8!(Path.utf8("${lab}/main.roc"), Str.join_with([header].concat(fresh_only.split_on("\n").drop_first(1)), "\n"))?
+				refused = run_tool!(tool, lab, ["build"])
+				Path.write_utf8!(Path.utf8("${lab}/main.roc"), lab_main)?
+				$problems = $problems.concat(judge(refused?, { code: 1, says: ["Engine.program_startup", "--no-prerender"] }))
 				if Path.exists!(Path.utf8("${lab}/dist"))? {
 					$problems = $problems.append("an ineligible default build published dist instead of requiring explicit opt-out")
 				}
-				$problems = $problems.concat(judge(run_tool!(tool, lab, ["build", "--no-prerender"])?, { code: 0, says: ["Built the app into dist/:", "/style.css", "  dist/robots.txt"] }))
+				$problems = $problems.concat(judge(run_tool!(tool, lab, ["build"])?, { code: 0, says: ["Built the app into dist/:", "/style.css", "  dist/robots.txt"] }))
 				$problems = $problems.concat(dist_problems!(o, lab)?)
 				built = Path.read_utf8!(Path.utf8("${lab}/dist/index.html"))?
+				if !built.contains("data-roc-frame=\"1:0:") {
+					$problems = $problems.append("signals.roc build: Worker Lab must publish an annotated first frame")
+				}
 				if !built.contains("href=\"assets/") or !(Path.exists!(Path.utf8("${lab}/dist/robots.txt"))?) {
 					$problems = $problems.append("signals.roc build: the page's style must be hashed and public/robots.txt copied to dist/robots.txt")
 				}

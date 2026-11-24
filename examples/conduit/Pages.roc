@@ -3,6 +3,7 @@ import pf.Engine
 import Api
 import Route
 import Locations
+import PublicSeed
 
 ## The pages' own state, one cell of the app's store (`AppStore`): every
 ## page's loads and forms but the article page's (`Article`). Where the
@@ -48,6 +49,15 @@ Pages := [].{
 		prof : ProfileModel,
 	}
 
+	feed_request : { feed : Route.Feed, token : Str } -> LoadReq
+	feed_request = |{ feed, token }| {
+		uri = Api.feed_uri(feed)
+		{ key: "${uri}|${token}", uri, token }
+	}
+
+	tags_request : LoadReq
+	tags_request = { key: "tags", uri: Api.tags_uri, token: "" }
+
 	no_submit : Submit
 	no_submit = { serial: 0, method: "GET", url: Err(EmptySegment), body: "", token: "" }
 
@@ -72,6 +82,22 @@ Pages := [].{
 	## The pages for a reader arriving at `loc`.
 	init : Str -> Model
 	init = |_| { loads: Pages.empty_loads, auth: Pages.auth0, settings: Pages.settings0, editor: Pages.editor0, prof: Pages.prof0 }
+
+	## The static entry opens with the demo's anonymous public feed. Its GETs
+	## still run once the browser's address and session arrive.
+	public_home : Model
+	public_home = {
+		initial = Pages.init("")
+		feed = Pages.feed_request({ feed: Route.default_feed, token: "" })
+		{
+			..initial,
+			loads: {
+				..initial.loads,
+				feed: { key: feed.key, value: Ready(PublicSeed.home.feed) },
+				tags: { key: Pages.tags_request.key, value: Ready(PublicSeed.home.tags) },
+			},
+		}
+	}
 
 	## The pages after a move from `from` to `url`: the same kind of page
 	## keeps its models; another kind starts every page again.

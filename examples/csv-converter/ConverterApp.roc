@@ -222,7 +222,7 @@ ConverterApp := [].{
 
 	program : Engine.Program
 	program =
-		Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_| AppStore.store, |_| ConverterApp.view({}))
+		Engine.program_startup_store({ storage_keys: [], max_inflight: 32 }, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| AppStore.store, |_| ConverterApp.view({}))
 			.with_workers([ConverterApp.convert.registration()])
 }
 

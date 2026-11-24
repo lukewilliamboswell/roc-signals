@@ -127,7 +127,7 @@ block_view = |row, kind| {
 	match kind {
 		Heading(level) => Engine.element(heading_tag(level), [Engine.class(if (level <= 3) "" else "mt-6 text-base font-semibold text-zinc-950")], [inline_view(text)])
 		Quote => Engine.element("blockquote", [], [inline_view(text)])
-		CodeBlock => Engine.element("pre", [], [Engine.element("code", [], [Engine.text_s(text)])])
+		CodeBlock => Engine.element("pre", [Engine.attr("tabindex", "0")], [Engine.element("code", [], [Engine.text_s(text)])])
 		ListBlock => Engine.element("ul", [], [Engine.each(row.field(|b| b.items), |i| i.key, item_view)])
 		Paragraph => Engine.element("p", [], [inline_view(text)])
 	}

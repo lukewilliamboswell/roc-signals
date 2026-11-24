@@ -31,10 +31,8 @@ SheetApp := [].{
 
 	page_class = "app-shell app-shell-wide"
 
-	## The grid is drawn as nested flex rows rather than a `<table>`, because
-	## each row has to stay a labelled `section` for the keyed-reorder specs
-	## to address it. Borders are hung off the bottom/right of every cell so
-	## the frame reads as one continuous ruled grid.
+	## Flex rows retain explicit grid semantics and row identity. Borders
+	## run along the bottom and right of each cell.
 	grid_frame_class = "min-w-max overflow-hidden border-l border-t border-zinc-200"
 
 	row_class = "flex items-stretch"
@@ -74,10 +72,21 @@ SheetApp := [].{
 			_ => "value break-words tabular-nums"
 		}
 
-	## The column header strip: an empty corner over the row-number gutter,
+	## The column header strip: a label for the row-number gutter,
 	## then one muted uppercase heading per column.
 	column_header : {} -> Elem(ctx)
-	column_header = |_| Html.div(SheetApp.header_row_class, [Html.div(SheetApp.gutter_class, [Engine.text("")])].concat(Cells.col_letters.map(|letter| Html.div(SheetApp.header_cell_class, [Engine.text(letter)]))))
+	column_header = |_| Engine.element(
+		"div",
+		[Engine.attr("role", "row"), Engine.class(SheetApp.header_row_class)],
+		[
+			Engine.element(
+				"div",
+				[Engine.attr("role", "columnheader"), Engine.class(SheetApp.gutter_class)],
+				[Engine.element("span", [Engine.class("sr-only")], [Engine.text("Row number")])],
+			),
+		]
+			.concat(Cells.col_letters.map(|letter| Engine.element("div", [Engine.attr("role", "columnheader"), Engine.class(SheetApp.header_cell_class)], [Engine.text(letter)]))),
+	)
 
 	## A cell of the sheet: a text input labelled with its address. What it
 	## shows follows the grid's mode, and its ring the caret. Typing in it
@@ -87,20 +96,27 @@ SheetApp := [].{
 	cell_input = |cell| {
 		address = cell.key()
 		index = cell.field(|held| held.index)
-		Html.text_input(
-			address,
-			"text",
-			cell.item().map2(SheetStore.cells.mode.signal(), Sheet.shown),
+		range = SheetStore.selected_range({}).map(|ends| Cells.bounds(ends.anchor, ends.active))
+		selected = index.map2(range, |at, bounds| Cells.in_range(bounds, at))
+		Engine.element(
+			"div",
+			[Engine.attr("role", "gridcell"), Engine.attr_s("aria-selected", selected.map(|in_range| if (in_range) "true" else "false"))],
 			[
-				Engine.test_id_s(address.map(|ref| "cell-${ref}")),
-				Engine.ref_s(address.map(|ref| "cell-${ref}")),
-				Engine.attr("role", "gridcell"),
-				Engine.class_s(cell.item().map2(SheetStore.cells.selected.signal(), |held, caret| SheetApp.tone_class(held.out.kind, if (held.index == caret) Selected else Unselected))),
-				Engine.attr_s("data-kind", cell.field(|held| Sheet.CellKind.to_str(held.out.kind))),
-				Html.on_focus(Engine.handle_by({ index: index, source: cell.field(|held| held.source), keyboard: SheetStore.cells.keyboard.signal() }.Signal, |reading, _value| SheetStore.focused_source(reading.index, reading.source, reading.keyboard))),
-				Html.on_blur(Engine.does(SheetStore.blurred)),
+				Html.text_input(
+					address,
+					"text",
+					cell.item().map2(SheetStore.cells.mode.signal(), Sheet.shown),
+					[
+						Engine.test_id_s(address.map(|ref| "cell-${ref}")),
+						Engine.ref_s(address.map(|ref| "cell-${ref}")),
+						Engine.class_s(cell.field(|held| held.out.kind).map2(selected, |kind, in_range| SheetApp.tone_class(kind, if (in_range) Selected else Unselected))),
+						Engine.attr_s("data-kind", cell.field(|held| Sheet.CellKind.to_str(held.out.kind))),
+						Html.on_focus(Engine.handle_by({ index: index, source: cell.field(|held| held.source), keyboard: SheetStore.cells.keyboard.signal() }.Signal, |reading, _value| SheetStore.focused_source(reading.index, reading.source, reading.keyboard))),
+						Html.on_blur(Engine.does(SheetStore.blurred)),
+					],
+					Engine.handle_by(index, |at, text| SheetStore.typed(at, text)),
+				),
 			],
-			Engine.handle_by(index, |at, text| SheetStore.typed(at, text)),
 		)
 	}
 
@@ -111,11 +127,11 @@ SheetApp := [].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	row_line = |number, held| {
 		label = number.map(|n| (n + 1).to_str())
-		Html.section_s(
-			label.map(|n| "Row ${n}"),
-			SheetApp.row_class,
+		Engine.element(
+			"div",
+			[Engine.attr("role", "row"), Engine.attr_s("aria-label", label.map(|n| "Row ${n}")), Engine.class(SheetApp.row_class)],
 			[
-				Engine.element("div", [Engine.class(SheetApp.gutter_class)], [Engine.text_s(label)]),
+				Engine.element("div", [Engine.attr("role", "rowheader"), Engine.class(SheetApp.gutter_class)], [Engine.text_s(label)]),
 				Engine.each(held.signal(), |cell| Cells.ref_of(cell.index), SheetApp.cell_input),
 			],
 		)
@@ -234,6 +250,8 @@ SheetApp := [].{
 								SheetApp.switch_button(mode.map(mode_button), Engine.does(SheetStore.mode_switched)),
 								SheetApp.switch_button(listing.map(rows_button), Engine.does(SheetStore.rows_switched)),
 								SheetApp.switch_button(listing.map(order_button), Engine.does(SheetStore.order_switched)),
+								SheetApp.switch_button(Engine.const("Copy selection"), Engine.handle_by(SheetStore.selected_range({}), |range, _| SheetStore.copy_requested(range))),
+								SheetApp.switch_button(Engine.const("Clear selection"), Engine.handle_by(SheetStore.edit_selection({}), |at, _| SheetStore.cleared(at))),
 							],
 						),
 					],
@@ -241,6 +259,8 @@ SheetApp := [].{
 				Html.div(
 					"panel-body",
 					[
+						Html.p("Extend the selection with Shift and an arrow key. Paste tab-separated cells into the grid. Formula references stay as written.", "hint"),
+						Html.p_s(SheetStore.cells.range_status.signal(), [Engine.test_id("range-status"), Engine.attr("role", "status"), Engine.class("hint")]),
 						Html.div(
 							"stat-grid",
 							[
@@ -277,7 +297,14 @@ SheetApp := [].{
 						[
 							Engine.element(
 								"div",
-								[Engine.class(SheetApp.grid_frame_class), Engine.attr("role", "grid"), Engine.on_key({ keymap: SheetStore.cells.editing.signal().map(SheetStore.keymap) }, SheetApp.key_handler(False))],
+								[
+									Engine.class(SheetApp.grid_frame_class),
+									Engine.attr("role", "grid"),
+									Engine.attr("aria-label", "Spreadsheet"),
+									Engine.attr("aria-multiselectable", "true"),
+									Engine.on_key({ keymap: SheetStore.cells.editing.signal().map(SheetStore.keymap) }, SheetApp.key_handler(False)),
+									Html.on_paste_text(Engine.handle_by(SheetStore.edit_selection({}), SheetStore.pasted)),
+								],
 								[
 									SheetApp.column_header({}),
 									Engine.table_view(
@@ -308,6 +335,7 @@ SheetApp := [].{
 				],
 			),
 			Engine.on_post(SheetStore.cells.keyboard.signal().map(|keyboard| keyboard.commands), |commands| commands.map(Engine.command), Engine.ignore({})),
+			Engine.on_post_by(SheetStore.cells.copies.signal(), SheetStore.cells.sheet.signal(), SheetStore.copy_asks, Engine.react(|_, result| SheetStore.copy_answered(result))),
 			SheetApp.formula_bar({}),
 			SheetApp.controls({}),
 			SheetApp.grid({}),
@@ -322,6 +350,10 @@ SheetApp := [].{
 		|reading, key| {
 			if key.heard == Engine.Chord.plain("Escape") {
 				SheetStore.cancelled(reading.index, reading.keyboard, reading.editing, if (formula) "formula-bar" else "cell-${Cells.ref_of(reading.index)}")
+			} else if Engine.Chord.plain("c").primary().contains(key.heard) {
+				SheetStore.copy_requested({ anchor: reading.keyboard.anchor, active: reading.index })
+			} else if key.heard == Engine.Chord.plain("Delete") {
+				SheetStore.cleared({ range: { anchor: reading.keyboard.anchor, active: reading.index }, keyboard: reading.keyboard, focus: reading.editing })
 			} else if key.heard == Engine.Chord.plain("F2") or (key.heard == Engine.Chord.plain("Enter") and !formula) {
 				[SheetStore.cells.keyboard.set({ ..reading.keyboard, commands: reading.keyboard.commands.post([Focus("formula-bar")]) })]
 			} else {
@@ -344,7 +376,7 @@ SheetApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner.
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_boot| SheetStore.store, |_boot| prepared_page)
+	program = Engine.program_startup_store({ storage_keys: [], max_inflight: 32 }, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| SheetStore.store, |_| prepared_page)
 }
 
 ## The label of the mode button: the mode a click changes to.

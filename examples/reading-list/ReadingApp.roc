@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Handler, Row, Signal, State]
+import pf.Engine exposing [Attr, Elem, Handler, Row, Signal, State]
 import pf.Html
 import ReadingList
 import BookStorage
@@ -37,19 +37,29 @@ ReadingApp := [].{
 			),
 			add_form({}),
 			shelves({}),
+			Engine.watch(
+				Engine.const({}),
+				|_| [Engine.environment({})],
+				Engine.react(
+					|_, result| match result {
+						Ok(facts) => ReadingList.initialized(facts)
+						Err(Refused) => [ReadingList.cells.note.set("Could not initialize this tab. Reload to retry.")]
+					},
+				),
+			),
 			# The database's books, once, at start. The answer counts only
 			# while the copy is still loading, which the reaction reads when
 			# it arrives.
 			Engine.watch(
-				Engine.const({}),
-				|_| [BookStorage.ports.load.ask({})],
+				ReadingList.cells.ready.signal(),
+				|ready| if (ready) [BookStorage.ports.load.ask({})] else [],
 				Engine.react_by(ReadingList.cells.copy.signal(), |copy, _, res| ReadingList.loaded(copy, res)),
 			),
 			# The database's books again after any tab writes, for as long
 			# as the app runs.
 			Engine.watch(
-				Engine.const({}),
-				|_| [BookStorage.ports.stored.ask({})],
+				ReadingList.cells.ready.signal(),
+				|ready| if (ready) [BookStorage.ports.stored.ask({})] else [],
 				Engine.react(|_, res| ReadingList.restocked(res)),
 			),
 			# Read the time a task after submission. Refusal uses the last
@@ -76,23 +86,23 @@ ReadingApp := [].{
 	## it.
 	program : Engine.Program
 	program =
-		Engine.program_store({ storage_keys: [], max_inflight: 32 }, ReadingList.start, |_| prepared_page)
+		Engine.program_startup_store({}, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| ReadingList.store, |_| prepared_page)
 			.with_ports(BookStorage.registrations)
 }
 
 ## An immutable description of the page, including its declared cell reads.
-## Each mount still calls ReadingList.start and owns its store and live scopes.
+## Each mount owns its store and live scopes.
 prepared_page : Elem(Engine.StoreRoot(_))
 prepared_page = ReadingApp.view({})
 
 ## A labelled text box of the form.
-field : { label : Str, value : Signal(ctx, Str), placeholder : Str, typed : Handler(ctx) } -> Elem(ctx)
-field = |{ label, value, placeholder, typed }|
+field : { label : Str, value : Signal(ctx, Str), attrs : List(Attr(ctx)), typed : Handler(ctx) } -> Elem(ctx)
+field = |{ label, value, attrs, typed }|
 	Html.div(
 		"field",
 		[
 			Html.p(label, "field-label"),
-			Html.text_input(Engine.const(label), "text", value, [Engine.class("input"), Engine.attr("placeholder", placeholder)], typed),
+			Html.text_input(Engine.const(label), "text", value, [Engine.class("input")].concat(attrs), typed),
 		],
 	)
 
@@ -110,8 +120,8 @@ add_form = |{}| {
 			Html.div(
 				"grid gap-3 sm:grid-cols-2",
 				[
-					field({ label: "Title", value: form.map(|f| f.title), placeholder: "Piranesi", typed: Engine.handle(ReadingList.title_typed) }),
-					field({ label: "Author", value: form.map(|f| f.author), placeholder: "Susanna Clarke", typed: Engine.handle(ReadingList.author_typed) }),
+					field({ label: "Title", value: form.map(|f| f.title), attrs: [Engine.attr("placeholder", "Piranesi")], typed: Engine.handle(ReadingList.title_typed) }),
+					field({ label: "Author", value: form.map(|f| f.author), attrs: [Engine.attr("placeholder", "Susanna Clarke")], typed: Engine.handle(ReadingList.author_typed) }),
 				],
 			),
 			Engine.element(
@@ -175,7 +185,99 @@ book = |id, row| {
 					),
 				],
 			),
+			edit_book(held),
 		],
+	)
+}
+
+## A draft exists only while its drawn book is being edited.
+Editor : [Closed, Open(BookStorage.NewBook)]
+
+## Enter the editor with the current details. Save and Cancel return focus
+## to the same book's Edit button.
+edit_book : Signal(ctx, BookStorage.Book) -> Elem(ctx)
+	where [ctx.store : () -> Engine.Reach(ctx, _)]
+edit_book = |row_book| {
+	closed : Editor
+	closed = Closed
+	Engine.state(
+		closed,
+		|editor| {
+			held = row_book.lift()
+			draft = editor.signal().map(
+				|state| match state {
+					Open(input) => input
+					Closed => ReadingList.blank
+				},
+			)
+			open = editor.signal().map(
+				|state| match state {
+					Open(_) => Bool.True
+					Closed => Bool.False
+				},
+			)
+			valid = draft.map(|input| !input.title.trim().is_empty())
+			trigger = held.map(|current| "edit-book-${current.id}")
+			title_input = held.map(|current| "book-title-${current.id}")
+			focus = open.map2({ trigger, title_input }.Signal, |showing, refs| if (showing) refs.title_input else refs.trigger)
+			save = Engine.handle_by(
+				{ book: held, draft }.Signal,
+				|at, _| ReadingList.edited(at),
+			).also(editor.update_by(valid, |state, allowed| if (allowed) Closed else state))
+			Html.div_s(
+				open.map(|showing| if (showing) "grid w-full gap-2" else "grid gap-2"),
+				[
+					Engine.watch_changes(focus, |name| [Engine.command(Focus(name))], Engine.ignore({})),
+					Engine.when(
+						open,
+						|| Html.form(
+							"Edit book details",
+							[Engine.class("grid gap-2"), Html.on_submit(save)],
+							[
+								field({
+									label: "Book title",
+									value: draft.map(|input| input.title),
+									attrs: [Engine.ref_s(title_input)],
+									typed: editor.set_value(
+										|state, title| match state {
+											Open(input) => Open({ ..input, title })
+											Closed => Closed
+										},
+									),
+								}),
+								field({
+									label: "Book author",
+									value: draft.map(|input| input.author),
+									attrs: [],
+									typed: editor.set_value(
+										|state, author| match state {
+											Open(input) => Open({ ..input, author })
+											Closed => Closed
+										},
+									),
+								}),
+								Html.div(
+									"toolbar",
+									[
+										Engine.element(
+											"button",
+											[Engine.attr("type", "submit"), Engine.class("button-primary button-sm"), Html.disabled(valid.map(|allowed| !allowed))],
+											[Engine.text("Save details")],
+										),
+										Html.button("Cancel edit", [Engine.class("button-ghost button-sm")], editor.update(|_| Closed)),
+									],
+								),
+							],
+						),
+						|| Html.button(
+							"Edit",
+							[Engine.class("button-ghost button-sm"), Html.aria_label_s(held.map(|current| "Edit ${current.title}")), Engine.ref_s(trigger)],
+							editor.update_by(held, |_, current| Open({ title: current.title, author: current.author })),
+						),
+					),
+				],
+			)
+		},
 	)
 }
 

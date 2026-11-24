@@ -344,6 +344,10 @@ copy and the store stay in agreement, across a reload and across tabs:
   may still be in flight when this tab writes; delivered after the write,
   it would undo it on the page. IndexedDB orders these reads and writes on one store as they were made, so the read that follows this tab's
   write sees it, and the last copy any tab receives is the store as it is.
+- **Each command updates only the fields it owns.** Moving a book changes
+  its shelf and editing its details changes its title and author. The
+  handler reads the current record and applies those fields in one
+  IndexedDB transaction, so concurrent changes to different fields survive.
 - **A failed command is undone by the copy that follows.** The handler
   emits the store's copy whether or not its write succeeded, so the app
   never needs to hear of the failure to show the truth. When the user must

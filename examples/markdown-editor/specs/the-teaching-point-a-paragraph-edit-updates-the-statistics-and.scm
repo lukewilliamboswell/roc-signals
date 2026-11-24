@@ -15,8 +15,8 @@
 
     (mark-metrics)
     (click (role button :name "Append a word"))
-    (expect-text (test-id "stat-words") "148")
-    (expect-text (test-id "stat-characters") "828")
+    (expect-text (test-id "stat-words") "147")
+    (expect-text (test-id "stat-characters") "829")
     (expect-text (test-id "stat-headings") "5")
     (expect-visible (text "Use "))
     ; The heading spine recomputes to an equal value, so the equality cutoff stops

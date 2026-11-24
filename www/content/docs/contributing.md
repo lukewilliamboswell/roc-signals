@@ -106,6 +106,17 @@ around an app, in a light and a dark palette, each with its own syntax
 colors. The fonts are files under `www/static/fonts/`, served with the website,
 with their license beside them.
 
+The site serves third-party scripts from `www/static/vendor/` with their
+licenses. The example catalogue names these scripts with `vendor` paths
+relative to that directory and pins their SHA-384 integrity hashes. The
+Plotly bundle comes from the
+[`plotly.js-basic-dist-min` 4.2.0 package](https://www.npmjs.com/package/plotly.js-basic-dist-min/v/4.2.0).
+It matches the version Plume 0.6.0 uses and includes the bar, pie and scatter
+traces the examples draw. With `chart = true`, the shared chart element
+loads and verifies the script when a chart nears the viewport. The Status
+Page and Million-Row Explorer also preload its bytes after hydration. The
+Log Explorer waits until there is a timeline to draw.
+
 ## Tasks
 
 These are the development environment's Blueprint tasks, not an app's
@@ -127,6 +138,15 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run site -- [--base-url URL] [--tool-url URL]` | Build the website, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
 | `blueprint run serve -- [DIR] [--port N]` | Serve `dist/` at `127.0.0.1:8000/roc-signals/`, its published path, or `DIR` at the root |
 | `blueprint run release -- --version V` | Build the release assets into `dist-release/` |
+
+The site build renders each example's declared entries with its native
+runner. The page includes the first frame and a receipt for its matching
+Wasm. The runtime binds those nodes when the module arrives. Examples read
+live inputs such as saved data and URL queries in a later environment turn.
+The browser check holds back Wasm and verifies that each visible example
+heading survives hydration as the same DOM node. It also scrolls through
+the chart examples on a mobile viewport and checks that they each share one
+locally served Plotly download.
 
 To browse the website locally:
 

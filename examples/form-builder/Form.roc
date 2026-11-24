@@ -19,6 +19,8 @@ Form := {}.{
 	## The kind of control a field renders in the preview.
 	Kind := [FieldText, FieldNumber, FieldEmail, FieldSelect, FieldCheckbox].{
 		is_eq : _
+		parser_for : _
+		encoder_for : _
 	}
 
 	## One field definition, as the form holds it under its number.

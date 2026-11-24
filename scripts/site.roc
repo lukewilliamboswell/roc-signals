@@ -17,6 +17,7 @@ import src/Proc
 import src/SpecSuite
 import src/Sizes
 import src/SiteCode
+import src/SitePictures
 
 ## The `site` task: build the documentation site into `dist/`
 ## (`-- --base-url URL` to browse it somewhere other than its published
@@ -25,14 +26,14 @@ import src/SiteCode
 ## highlights samples, replacing relative header dependency URLs with a release-URL
 ## placeholder while preserving their other text. Zola checks the internal links
 ## and builds `www/`,
-## roc-docs generates the API docs into `dist/api/`, and every example's
-## `main.roc` is built for wasm32 (`--opt=size`, as it ships) to
-## `dist/examples/<slug>/app.wasm` beside `dist/runtime.mjs` (and its worker
-## script, `dist/worker.mjs`), which the
-## site's `site.mjs` mounts it with, and its size is reported as `check`'s
-## size report reports it (CI's Check leaves that report here). Every other file an example's page
-## loads, as `www/data/examples.toml` names it (its scripts, port handlers,
-## simulated service and data), is copied beside its app. The checked documentation
+## roc-docs generates the API docs into `dist/api/`. Each example's native
+## runner renders the catalogue's first frames and its shipping Wasm
+## (`--opt=size`) hydrates them. The site loader and runtime share one
+## content-addressed directory, and each app has its own hashed Wasm URL.
+## The task reports the shipped modules' sizes for CI. Example scripts,
+## port handlers, simulated services and data are copied from the catalogue in
+## `www/data/examples.toml`. Zola publishes the vendored scripts from
+## `www/static/vendor/`. The checked documentation
 ## sample sources are published under `dist/samples/` for readers to download.
 ## `--tool-url URL` points onboarding downloads at a matching candidate tool
 ## when reviewing an unreleased API; normal builds link the latest release.
@@ -42,7 +43,10 @@ main! = |raw_args| {
 		Proc.warn!("usage: site.roc -- [--base-url URL] [--tool-url URL]")
 		return Err(Exit(2))
 	}
-	o = Checks.options!({ filter: "*" })?
+	site_options = Checks.options!({ filter: "*" })?
+	uname = Str.from_utf8_lossy(Proc.capture!({ program: "uname", args: ["-sm"], cwd: site_options.root })?)
+	target = SpecSuite.host_target(uname) ? |Unknown(value)| UnsupportedSiteHost(value)
+	o = { ..site_options, target }
 	dist = "${o.root}/dist"
 	config = match options.tool_url {
 		Released => []
@@ -65,13 +69,8 @@ main! = |raw_args| {
 	DocSamples.copy!({ root: o.root, dist, publish_roc: SiteCode.published_source })?
 	api = ApiDocs.build!(o, "main")?
 	Proc.run!({ program: "cp", args: ["-R", api, "${dist}/api"], cwd: o.root })?
-	SpecSuite.build_web_platform!(o)?
-	SpecSuite.build_with!(o, [], SpecSuite.apps, "size")?
-	for example in SpecSuite.apps {
-		dir = "${dist}/examples/${example}"
-		Path.create_all!(Path.utf8(dir))?
-		Path.copy!(Path.utf8(SpecSuite.wasm_of(o, example)), Path.utf8("${dir}/app.wasm"))?
-	}
+	Checks.prepare_platform!(o)?
+	SpecSuite.build_all!(o, { natives: SpecSuite.apps, webs: [], sized: SpecSuite.apps })?
 	# The size report of every catalogue example, on the modules this site
 	# publishes: CI's Check runs `check -- --without-sizes` and leaves the
 	# report to this job, so each example's --opt=size module is built once.
@@ -84,6 +83,10 @@ main! = |raw_args| {
 	Sizes.report_modules!({ root: o.root, node: o.node }, catalog.map(|slug| (slug, SpecSuite.wasm_of(o, slug))))?
 	ExampleFiles.copy_all!(o.root, dist)?
 	SpecSuite.copy_runtime!(o.root, dist)?
+	loader = SitePictures.copy_loader!(o, dist)?
+	for example in SpecSuite.apps {
+		SitePictures.render!(o, { example, dist, loader })?
+	}
 	Proc.run!({ program: "node", args: ["tests/browser/site.mjs", dist], cwd: o.root })?
 	Proc.note!("site: built ${dist}")
 	Ok({})

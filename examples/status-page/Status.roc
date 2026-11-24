@@ -289,7 +289,7 @@ Status := [].{
 				Degraded => "notice-warn"
 				Healthy => "notice-ok"
 			}
-		"notice ${tone} flex flex-wrap items-baseline justify-between gap-2 px-4 py-3"
+		"notice ${tone} grid gap-2 px-4 py-3 sm:flex sm:flex-wrap sm:items-baseline sm:justify-between"
 	}
 
 	reporting_text : Tally -> Str

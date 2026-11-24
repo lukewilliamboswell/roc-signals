@@ -43,6 +43,7 @@ ${opts.plotly ? '<script src="plotly.min.js"></script>' : ""}
   const root = document.getElementById("app");
   try {
     window.__rt = await mountRocEngineApp({ wasmUrl: "app.wasm", root, ports });
+    root.addEventListener("roc-signals:runtime-request", event => event.detail(window.__rt));
     root.dispatchEvent(new CustomEvent("roc-signals:runtime", { bubbles: true, detail: { runtime: window.__rt } }));
     window.__ready = true;
   } catch (e) {

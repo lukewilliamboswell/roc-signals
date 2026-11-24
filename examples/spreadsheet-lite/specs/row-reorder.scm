@@ -91,8 +91,8 @@
 
     (mark-metrics)
     (click (role button :name "Reverse row order"))
-    (expect-visible (role region :name "Row 1"))
-    (expect-visible (role region :name "Row 12"))
+    (expect-visible (role row :name "Row 1"))
+    (expect-visible (role row :name "Row 12"))
     (expect-value (label "D2") "2500")
     (expect-value (label "C12") "7")
     ; The grid is a view of the sheet's table: it keeps all twelve rows and

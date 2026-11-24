@@ -67,7 +67,7 @@ Formula := [].{
 					}
 					Err(_) => {
 						$out = $out.append(TBad)
-						$rest = $rest.drop_first(1)
+						$rest = after_number($rest)
 					}
 				}
 			} else if Formula.starts_with_sum($rest) {
@@ -292,7 +292,7 @@ Formula := [].{
 								}
 							}
 							TSum(cells) => {
-								var $total = 0
+								var $total = 0.I128
 								var $member = 0
 
 								while $member < cells.len() {
@@ -301,7 +301,7 @@ Formula := [].{
 									match Formula.slot_value(slots, cell) {
 										Empty => {}
 										Number(value) => {
-											$total = $total + value
+											$total = $total + value.to_i128()
 										}
 										Text(_) => {}
 										Bad(message) => {
@@ -312,7 +312,16 @@ Formula := [].{
 									$member = $member + 1
 								}
 
-								$stack = $stack.append($total)
+								if $error == NoError {
+									match Cells.checked_fixed($total) {
+										Ok(value) => {
+											$stack = $stack.append(value)
+										}
+										Err(Overflow) => {
+											$error = Failed("#NUM!")
+										}
+									}
+								}
 							}
 							TOp(op) => {
 								if $stack.len() < 2 {
@@ -321,30 +330,21 @@ Formula := [].{
 									right = $stack.get($stack.len() - 1) ?? 0
 									left = $stack.get($stack.len() - 2) ?? 0
 									$stack = $stack.drop_last(2)
-									if op == '+' {
-										$stack = $stack.append(left + right)
-									} else if op == '-' {
-										$stack = $stack.append(left - right)
-									} else if op == '*' {
-										match Cells.multiply(left, right) {
-											Ok(value) => {
-												$stack = $stack.append(value)
-											}
-											Err(_) => {
-												$error = Failed("#NUM!")
-											}
+									answer = match op {
+										'+' => Cells.checked_fixed(left.to_i128() + right.to_i128())
+										'-' => Cells.checked_fixed(left.to_i128() - right.to_i128())
+										'*' => Cells.multiply(left, right)
+										_ => Cells.divide(left, right)
+									}
+									match answer {
+										Ok(value) => {
+											$stack = $stack.append(value)
 										}
-									} else {
-										match Cells.divide(left, right) {
-											Ok(value) => {
-												$stack = $stack.append(value)
-											}
-											Err(DivideByZero) => {
-												$error = Failed("#DIV/0!")
-											}
-											Err(_) => {
-												$error = Failed("#NUM!")
-											}
+										Err(DivideByZero) => {
+											$error = Failed("#DIV/0!")
+										}
+										Err(Overflow) => {
+											$error = Failed("#NUM!")
 										}
 									}
 								}
@@ -373,20 +373,9 @@ Formula := [].{
 		if source.is_empty() {
 			Empty
 		} else {
-			negative = source.starts_with("-")
-			digits = if negative {
-				source.drop_prefix("-")
-			} else {
-				source
-			}
-			match Cells.take_number(digits.to_utf8()) {
-				Ok(parsed) if parsed.rest.is_empty() =>
-					if negative {
-						Number(0 - parsed.value)
-					} else {
-						Number(parsed.value)
-					}
-				_ => Text(source)
+			match Cells.read_number(source) {
+				Ok(value) => Number(value)
+				Err(NotANumber) => Text(source)
 			}
 		}
 
@@ -405,6 +394,17 @@ Formula := [].{
 			}
 		}
 	}
+}
+
+## An invalid numeral still consumes its whole run of digits and points.
+## Retrying from each digit can make a long malformed paste quadratic.
+after_number : List(U8) -> List(U8)
+after_number = |bytes| {
+	var $rest = bytes
+	while Cells.head_is_digit($rest) or Cells.byte_at($rest, 0) == '.' {
+		$rest = $rest.drop_first(1)
+	}
+	$rest
 }
 
 ## A literal cell reads no other cells.
@@ -457,3 +457,10 @@ expect Formula.eval_tokens(Formula.tokenize("(1+2"), []) == Bad("#ERROR!")
 
 ## A reference outside the sheet tokenizes as bad input and fails the formula.
 expect Formula.eval_tokens(Formula.tokenize("Z9+1"), []) == Bad("#ERROR!")
+
+## Addition and a range sum report overflow as a cell error.
+expect {
+	large = 9223372036854770000.I64
+	slots = [Ready(Number(large)), Ready(Number(large))]
+	[Formula.eval_tokens(Formula.tokenize("A1+B1"), slots), Formula.eval_tokens(Formula.tokenize("SUM(A1:B1)"), slots)] == [Bad("#NUM!"), Bad("#NUM!")]
+}

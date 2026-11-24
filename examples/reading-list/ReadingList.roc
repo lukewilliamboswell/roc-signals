@@ -13,8 +13,8 @@ import BookStorage
 ## call that the database. This module builds the app's store, the cells
 ## the page shares.
 ##
-## The app keeps its own copy of the books, a table by id. Moves and
-## deletions change it in the click's turn and post commands for the database.
+## The app keeps its own copy of the books, a table by id. Edits, moves and
+## deletions change it in the event's turn and post commands for the database.
 ## An add first samples the clock, then sends a complete book and waits for
 ## confirmation. Each stage is posted to an outbox and handled by `on_post`. The database's own copy wins whenever
 ## it reports one: once at start (`load`), and after any tab writes
@@ -40,7 +40,7 @@ ReadingList := [Books].{
 	Showing : [Everything, Only(BookStorage.Shelf)]
 
 	## A change the database must learn of, sent as a command.
-	Command : [Put(BookStorage.Book), Delete(Str)]
+	Command : [Move(BookStorage.Move), Edit(BookStorage.Edit), Delete(Str)]
 
 	## Whether the app's copy of the books has come from the database.
 	Copy : [Loading, Loaded, Unreadable(Str)]
@@ -70,6 +70,7 @@ ReadingList := [Books].{
 			stamping: Engine.cell(Engine.outbox({})),
 			adding: Engine.cell(Engine.outbox({})),
 			id_state: Engine.cell(0.U64),
+			ready: Engine.cell(Bool.False),
 			clock: Engine.cell(0.I64),
 			writes: Engine.cell(Engine.outbox({})),
 			note: Engine.cell(""),
@@ -79,13 +80,14 @@ ReadingList := [Books].{
 	## The store's cells.
 	cells = ReadingList.store.cells()
 
-	## A document starts its own id stream from the boot seed. The last
-	## sampled clock is the mount time until a successful timer reads it again.
-	start : Engine.Boot -> Engine.Store(_, _)
-	start = |boot|
-		ReadingList.store
-			.with_initial(ReadingList.cells.id_state, boot.seed.to_u64_wrap().bitwise_xor(boot.seed.shr_zf_wrap(64).to_u64_wrap()))
-			.with_initial(ReadingList.cells.clock, boot.now_ms)
+	## The live environment starts the document's id stream and supplies
+	## the clock used until its first successful timer.
+	initialized : Engine.Boot -> List(Engine.Write(_))
+	initialized = |facts| [
+		ReadingList.cells.id_state.set(facts.seed.to_u64_wrap().bitwise_xor(facts.seed.shr_zf_wrap(64).to_u64_wrap())),
+		ReadingList.cells.clock.set(facts.now_ms),
+		ReadingList.cells.ready.set(Bool.True),
+	]
 
 	## How a shelf selects and orders the books: the `plan` of the list's
 	## view.
@@ -215,7 +217,24 @@ ReadingList := [Books].{
 	advanced : BookStorage.Book -> List(Engine.Write(_))
 	advanced = |book| {
 		moved = { ..book, shelf: next_shelf(book.shelf) }
-		[ReadingList.cells.books.update(|table| table.replace(moved.id, moved)), ReadingList.send([Put(moved)])]
+		[ReadingList.cells.books.update(|table| table.replace(moved.id, moved)), ReadingList.send([Move({ id: moved.id, shelf: moved.shelf })])]
+	}
+
+	## Save the trimmed details of one book. The browser receives only the
+	## edited fields so a move made in another tab can keep its shelf.
+	edited : { book : BookStorage.Book, draft : BookStorage.NewBook } -> List(Engine.Write(_))
+	edited = |{ book, draft }| {
+		title = draft.title.trim()
+		author = draft.author.trim()
+		if title.is_empty() or (title == book.title and author == book.author) {
+			[]
+		} else {
+			edit = { id: book.id, title, author }
+			[
+				ReadingList.cells.books.update(|table| table.update(edit.id, |current| { ..current, title, author })),
+				ReadingList.send([Edit(edit)]),
+			]
+		}
 	}
 
 	## Delete a book.
@@ -254,7 +273,8 @@ ReadingList := [Books].{
 	requests = |commands|
 		commands.map(
 			|command| match command {
-				Put(book) => Engine.command(BookStorage.ports.put.send(book))
+				Move(change) => Engine.command(BookStorage.ports.move.send(change))
+				Edit(change) => Engine.command(BookStorage.ports.edit.send(change))
 				Delete(id) => Engine.command(BookStorage.ports.remove.send({ id: id }))
 			},
 		)
@@ -441,7 +461,7 @@ expect {
 ## A seed fixes the id stream. Timers supply signed time, while refusal
 ## uses the last sample and still consumes the next id rather than reusing one.
 expect {
-	ready = after_load(ReadingList.start({ seed: 7, now_ms: -900 }), Ok([]))
+	ready = after_load(ReadingList.store.after(ReadingList.initialized({ seed: 7, now_ms: -900 })), Ok([]))
 	stamp : Engine.Store(_, _), Try(I64, [Refused]) -> Engine.Store(_, _)
 	stamp = |at, result| at.after(ReadingList.stamped({ at: { state: at.read(ReadingList.cells.id_state), clock: at.read(ReadingList.cells.clock) }, form: { title: "Dune", author: "" }, result }))
 	first = stamp(ready, Ok(10))
@@ -465,7 +485,7 @@ expect {
 expect {
 	seed : U128
 	seed = 7
-	ready = ReadingList.start({ seed: seed.shl_wrap(64), now_ms: -900 })
+	ready = ReadingList.store.after(ReadingList.initialized({ seed: seed.shl_wrap(64), now_ms: -900 }))
 	stamped = ready.after(ReadingList.stamped({ at: { state: ready.read(ReadingList.cells.id_state), clock: ready.read(ReadingList.cells.clock) }, form: { title: "Dune", author: "" }, result: Err(Refused) }))
 	stamped.read(ReadingList.cells.adding).last() == Posted({ id: "b-63cbe1e459320dd7", title: "Dune", author: "", shelf: WantToRead, added_ms: -900 })
 }
@@ -487,11 +507,31 @@ expect {
 		\\cleared: ${Str.inspect(titles(cleared))} ${Str.inspect(cleared.read(ReadingList.cells.writes).last())}
 		\\nothing finished: ${Str.inspect(nothing.read(ReadingList.cells.writes).last())}
 	expected =
-		\\started: Posted([Put({ added_ms: 10, author: "Frank Herbert", id: "b1", shelf: Reading, title: "Dune" })])
-		\\again: [Finished, Reading] Posted([Put({ added_ms: 10, author: "Frank Herbert", id: "b1", shelf: Reading, title: "Dune" })])
+		\\started: Posted([Move({ id: "b1", shelf: Reading })])
+		\\again: [Finished, Reading] Posted([Move({ id: "b1", shelf: Reading })])
 		\\cleared: [] Posted([Delete("b2"), Delete("b1")])
 		\\nothing finished: Unposted
 	actual == expected
+}
+
+## Editing preserves the book's identity, shelf, timestamp and sort position.
+## A blank title or unchanged details post no command.
+expect {
+	current = { ..dune, shelf: Reading }
+	shelf = after_load(ReadingList.store, Ok([current, piranesi]))
+	apply = |draft| shelf.after(ReadingList.edited({ book: current, draft }))
+	changed = apply({ title: " Dune Messiah ", author: " Frank Herbert " })
+	{
+		books: ReadingList.listed(changed.read(ReadingList.cells.books), Everything),
+		command: changed.read(ReadingList.cells.writes).last(),
+		blank: apply({ title: " ", author: current.author }).read(ReadingList.cells.writes).last(),
+		same: apply({ title: " Dune ", author: current.author }).read(ReadingList.cells.writes).last(),
+	} == {
+		books: [piranesi, { ..current, title: "Dune Messiah" }],
+		command: Posted([Edit({ id: "b1", title: "Dune Messiah", author: "Frank Herbert" })]),
+		blank: Unposted,
+		same: Unposted,
+	}
 }
 
 ## A database's answer replaces the app's copy; a book the database added

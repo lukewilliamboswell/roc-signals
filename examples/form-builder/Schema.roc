@@ -18,15 +18,21 @@ Schema := [].{
 	## the fields, and the number the next field added will take.
 	Cells(st) : { fields : Cell(st, Fields), next : Cell(st, U64) }
 
+	## An exhausted sequence can still be stored and reopened. No further
+	## number can be allocated without reusing earlier identities.
+	is_exhausted : U64 -> Bool
+	is_exhausted = |number| number == 18446744073709551615
+
 	## What "Add" writes for a field of `kind`, given the number the next
 	## field takes: the new field under that number, last in the form, and
 	## the number after it as the next one. The two are written together so
 	## that no number is ever given twice.
 	added : Cells(st), { kind : Form.Kind, number : U64 } -> List(Engine.Write(st))
-	added = |schema, { kind, number }| [
-		schema.fields.update(|table| table.insert(number, Form.new_field(kind, number))),
-		schema.next.set(number + 1),
-	]
+	added = |schema, { kind, number }|
+		if (Schema.is_exhausted(number)) [] else [
+			schema.fields.update(|table| table.insert(number, Form.new_field(kind, number))),
+			schema.next.set(number + 1),
+		]
 
 	## What a field's "Move up" and "Move down" write: the field and the
 	## one beside it, with their places exchanged. `Form` decides a move

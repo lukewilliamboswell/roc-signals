@@ -248,7 +248,7 @@ GridApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner.
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_boot| GridStore.store, |_boot| GridApp.view({}))
+	program = Engine.program_startup_store({ storage_keys: [], max_inflight: 32 }, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| GridStore.store, |_| GridApp.view({}))
 }
 
 ## What a checkbox's event says: `"true"` when it was ticked.

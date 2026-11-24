@@ -23,7 +23,7 @@ KanbanApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner.
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_boot| AppStore.store, |_boot| KanbanApp.view({}))
+	program = Engine.program_startup_store({ storage_keys: [], max_inflight: 32 }, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| AppStore.store, |_| KanbanApp.view({}))
 }
 
 ## What the board is drawn over: the cells of this app's store that `Board`
@@ -42,7 +42,7 @@ page = |sizes| Html.div(
 			"app-header",
 			[
 				Html.h1("Kanban Board", "app-title"),
-				Html.p("Move cards across columns, reorder within a column, filter by title, and watch derived per-column counts and WIP limits.", "app-subtitle"),
+				Html.p("Drag a card by its handle to move it across columns or change its order. The arrow buttons do the same with a keyboard. Filter by title and watch the column counts and WIP limits.", "app-subtitle"),
 			],
 		),
 		controls({}),

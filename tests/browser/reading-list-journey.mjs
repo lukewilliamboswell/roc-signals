@@ -3,9 +3,9 @@
 // (examples/reading-list/index.html) and its own port handlers
 // (examples/reading-list/ports.mjs) against real IndexedDB and a real
 // BroadcastChannel: what the specs, which stand in for the handlers, cannot
-// show. Books added and moved are in the database as the port's JSON says;
-// a reload finds them again; a second tab sees the first's changes and the
-// first the second's; a record the app does not understand is reported as
+// show. Books added, moved and edited persist in the database. A reload
+// finds them again, and each tab sees the other's changes. Concurrent
+// edits and shelf moves preserve both changes. An unreadable record is reported as
 // the typed error, not a fault; and nothing a handler does reaches the
 // console as a fault. A book with an optional empty author also leaves no
 // Roc allocations behind after removal and unmount, using the real ports.
@@ -74,16 +74,21 @@ function install() {
     if (el === null) throw new Error(`no element named ${name}`);
     el.click();
   };
+  const fill = (label, value) => {
+    const input = named(label);
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
   window.__add = (title, author) => {
-    for (const [label, value] of [
-      ["Title", title],
-      ["Author", author],
-    ]) {
-      const input = named(label);
-      input.value = value;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    }
+    fill("Title", title);
+    fill("Author", author);
     named("Add book").click();
+  };
+  window.__edit = (previous, title, author) => {
+    window.__click(`Edit ${previous}`);
+    fill("Book title", title);
+    fill("Book author", author);
+    named("Save details").click();
   };
   // The database as the handlers left it, read with IndexedDB directly.
   window.__stored = () =>
@@ -187,6 +192,27 @@ await until(first, "removing every finished book", titles, ["Middlemarch"]);
 await until(second, "reaches the second tab too", titles, ["Middlemarch"]);
 await until(first, "and the store", async () => (await window.__stored()).map((b) => b.title), ["Middlemarch"]);
 
+// Write directly in one tab to hold the other tab's view stale independently
+// of BroadcastChannel timing. The actual port command then sees the newer
+// record in its own transaction and publishes the merged record to both tabs.
+const middlemarch = await first.evaluate(async () => (await window.__stored())[0]);
+await second.evaluate((book) => window.__write({ ...book, shelf: "Reading" }), middlemarch);
+const correctedTitle = "Middlemarch: A Study of Provincial Life";
+await first.evaluate((title) => window.__edit("Middlemarch", title, "Mary Ann Evans"), correctedTitle);
+const savedEdit = { ...middlemarch, shelf: "Reading", title: correctedTitle, author: "Mary Ann Evans" };
+await until(first, "editing a stale book preserves its id, timestamp and newer shelf", async () => (await window.__stored())[0], savedEdit);
+await until(second, "the edit and shelf both reach the other tab", has, true, `Finish ${correctedTitle}`);
+await until(first, "the edited book stays in the reading shelf", has, true, `Finish ${correctedTitle}`);
+
+const newerAuthor = { ...savedEdit, author: "George Eliot" };
+await first.evaluate((book) => window.__write(book), newerAuthor);
+await second.evaluate((title) => window.__click(`Finish ${title}`), correctedTitle);
+const savedMove = { ...newerAuthor, shelf: "Finished" };
+await until(second, "moving a stale book preserves its newer author", async () => (await window.__stored())[0], savedMove);
+await reload(first);
+await until(first, "reload keeps the edited title and finished shelf", has, true, `Read ${correctedTitle} again`);
+await until(first, "reload displays the edited author", () => document.querySelector('[aria-label="Books"] li .muted')?.textContent, "George Eliot");
+
 // A record the app does not understand (written by something else) is the
 // typed Undecodable error, shown by the app; removing it recovers.
 await first.evaluate(() => window.__write({ id: "stray", title: "Stray", author: "", shelf: "Abandoned", added_ms: "1" }));
@@ -199,7 +225,13 @@ await until(
 );
 await first.evaluate(() => window.__write({ delete: "stray" }));
 await reload(first);
-await until(first, "without it the shelf reads again", titles, ["Middlemarch"]);
+await until(first, "without it the shelf reads again", titles, [correctedTitle]);
+
+await second.evaluate((id) => window.__write({ delete: id }), middlemarch.id);
+await first.evaluate((title) => window.__edit(title, "An old draft", ""), correctedTitle);
+await until(first, "an edit after deletion leaves the book absent", titles, []);
+await until(second, "the other tab also sees the deletion", titles, []);
+await until(first, "the edit did not recreate the IndexedDB record", async () => await window.__stored(), []);
 
 check(
   "no console errors or page errors in either tab",

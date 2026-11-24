@@ -19,6 +19,11 @@ import Status
 ## zoom across redraws (`ui_revision: Preserve(...)`).
 Charts := [].{
 
+	## The figures and their first-frame shells reserve the same pixel heights.
+	uptime_height = 280.U16
+
+	latency_height = 320.U16
+
 	## Each service's line colour, the same in every chart. The status
 	## tones (green, amber, red) are left to the badges, so a line's colour
 	## names a service and never a health.
@@ -111,7 +116,7 @@ latency_chart = |window| {
 		Chart.new({
 			traces: $traces,
 			layout: Layout.new({
-				size: Size.new({ height: Pixels(320), margin: Pixels({ left: 64, right: 16, top: 48, bottom: 48 }) })?,
+				size: Size.new({ height: Pixels(Charts.latency_height), margin: Pixels({ left: 64, right: 16, top: 48, bottom: 48 }) })?,
 				x_axis: Axis.new({ title: Title.new({ text: "Time (UTC)" }), type: Date, tick_format: Pattern("%H:%M:%S") })?,
 				y_axis: Axis.new({ title: Title.new({ text: "p95 latency" }), range: FromZero, tick_suffix: " ms" })?,
 				legend: Shown,
@@ -168,7 +173,7 @@ uptime_chart = |history| {
 		Chart.new({
 			traces: $traces,
 			layout: Layout.new({
-				size: Size.new({ height: Pixels(280), margin: Pixels({ left: 56, right: 16, top: 48, bottom: 48 }) })?,
+				size: Size.new({ height: Pixels(Charts.uptime_height), margin: Pixels({ left: 56, right: 16, top: 48, bottom: 48 }) })?,
 				x_axis: Axis.new({ title: Title.new({ text: "Checks before the latest" }), type: Linear, range: Bounds({ min: oldest, max: 0 }) })?,
 				y_axis: Axis.new({ title: Title.new({ text: "Uptime" }), type: Linear, tick_suffix: "%" })?,
 				legend: Shown,

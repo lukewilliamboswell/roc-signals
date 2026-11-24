@@ -20,6 +20,6 @@
     (expect-port-subscriptions "roc-signals.example/reading-list/stored" 0)
     (expect-text (test-id "note") "Changes made in other tabs no longer reach this one. Reload to see them.")
     (click (role button :name "Finish Dune"))
-    (expect-port-sends "roc-signals.example/reading-list/put" 1)
+    (expect-port-sends "roc-signals.example/reading-list/move" 1)
   )
 )

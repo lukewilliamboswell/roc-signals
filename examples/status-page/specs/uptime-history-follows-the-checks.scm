@@ -1,10 +1,11 @@
 (test "Status page — The uptime history follows the checks"
   (steps
+    (run-opportunity)
     ; The history is a `plume-chart` element whose `data-figure` attribute
     ; is the Plotly figure Plume built: one line per service, the newest
     ; check at 0 and older ones to its left, over a fixed axis of the 60
     ; checks the page keeps. Before any check answers, every line is empty.
-    (expect-visible (role img :name "Uptime history by service"))
+    (expect-visible (role group :name "Uptime history by service"))
     (expect-attr (test-id "uptime-chart") data-figure "{\"data\":[{\"type\":\"scatter\",\"x\":[],\"y\":[],\"marker\":{\"color\":[],\"size\":[],\"symbol\":[]},\"name\":\"API\",\"line\":{\"width\":2,\"color\":\"rgb(37, 99, 235)\",\"dash\":\"solid\"},\"mode\":\"lines+markers\"},{\"type\":\"scatter\",\"x\":[],\"y\":[],\"marker\":{\"color\":[],\"size\":[],\"symbol\":[]},\"name\":\"Web app\",\"line\":{\"width\":2,\"color\":\"rgb(124, 58, 237)\",\"dash\":\"solid\"},\"mode\":\"lines+markers\"},{\"type\":\"scatter\",\"x\":[],\"y\":[],\"marker\":{\"color\":[],\"size\":[],\"symbol\":[]},\"name\":\"Database\",\"line\":{\"width\":2,\"color\":\"rgb(13, 148, 136)\",\"dash\":\"solid\"},\"mode\":\"lines+markers\"},{\"type\":\"scatter\",\"x\":[],\"y\":[],\"marker\":{\"color\":[],\"size\":[],\"symbol\":[]},\"name\":\"Notifications\",\"line\":{\"width\":2,\"color\":\"rgb(219, 39, 119)\",\"dash\":\"solid\"},\"mode\":\"lines+markers\"}],\"layout\":{\"font\":{},\"title\":{},\"xaxis\":{\"range\":[-59,0],\"type\":\"linear\",\"title\":{\"text\":\"Checks before the latest\",\"font\":{}},\"color\":\"rgb(68, 68, 68)\"},\"yaxis\":{\"autorange\":true,\"type\":\"linear\",\"title\":{\"text\":\"Uptime\",\"font\":{}},\"color\":\"rgb(68, 68, 68)\",\"ticksuffix\":\"%\"},\"showlegend\":true,\"legend\":{\"orientation\":\"h\",\"x\":0,\"xanchor\":\"left\",\"y\":1.02,\"yanchor\":\"bottom\"},\"height\":280,\"margin\":{\"l\":56,\"r\":16,\"t\":48,\"b\":48},\"hovermode\":\"x unified\",\"uirevision\":\"uptime-history\"}}")
 
     ; The mount's refresh answers: each service that reported an uptime

@@ -2,7 +2,7 @@ import pf.Engine
 import pf.Port
 
 ## Where the reading list keeps its books: the browser's IndexedDB, which the
-## platform does not model, reached through five ports. This module is the
+## platform does not model, reached through ports. This module is the
 ## Roc side of them, their names and the types that cross; `ports.mjs`,
 ## beside it, is the JavaScript side, which the page passes when it mounts
 ## the app. Each port here has exactly one handler there.
@@ -10,8 +10,8 @@ import pf.Port
 ## - `load` is a call: the books as stored, once, when the app starts.
 ## - `add` is a call: Roc supplies a complete new book, including its id and
 ##   capture time, and the store answers with the book as stored.
-## - `put` and `remove` are commands: the app has already shown the change,
-##   and nothing it would do differs with the answer.
+## - `move`, `edit` and `remove` are commands. The app shows each change
+##   immediately and reconciles with the next database report.
 ## - `stored` is a subscription: the books as stored, after any tab
 ##   (this one included) changes them, so every open tab converges on what
 ##   the store holds.
@@ -29,6 +29,12 @@ BookStorage := [].{
 	## What the user typed for a new book.
 	NewBook : { title : Str, author : Str }
 
+	## Change a book's shelf while preserving its details.
+	Move : { id : Str, shelf : Shelf }
+
+	## Change a book's details while preserving its shelf and capture time.
+	Edit : { id : Str, title : Str, author : Str }
+
 	## The module's named ports, declared once and registered together.
 	Ports : {
 		## Every book in the store.
@@ -37,8 +43,11 @@ BookStorage := [].{
 		## Store the complete book Roc minted, returning it after the write commits.
 		add : Port.Call(Book, Book),
 
-		## Store a book as it now is (a move to another shelf).
-		put : Port.Command(Book),
+		## Set a stored book's shelf. A missing id stays absent.
+		move : Port.Command(Move),
+
+		## Set a stored book's title and author. A missing id stays absent.
+		edit : Port.Command(Edit),
 
 		## Delete a book from the store.
 		remove : Port.Command({ id : Str }),
@@ -53,7 +62,8 @@ BookStorage := [].{
 	ports = {
 		load: Port.call({ name: "roc-signals.example/reading-list/load", timeout: Ms(10000) }),
 		add: Port.call({ name: "roc-signals.example/reading-list/add", timeout: Ms(10000) }),
-		put: Port.command({ name: "roc-signals.example/reading-list/put" }),
+		move: Port.command({ name: "roc-signals.example/reading-list/move" }),
+		edit: Port.command({ name: "roc-signals.example/reading-list/edit" }),
 		remove: Port.command({ name: "roc-signals.example/reading-list/remove" }),
 		stored: Port.subscription({ name: "roc-signals.example/reading-list/stored", delivery: Latest }),
 	}
