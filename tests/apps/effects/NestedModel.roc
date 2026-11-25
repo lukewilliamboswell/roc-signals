@@ -29,7 +29,10 @@ import pf.SpecRunner
 ## - `supersededNeverRuns`: what a `watch_latest` gave up is cancelled;
 ## - `latestOwnsOnlyCurrent`: a live `watch_latest` site owns only requests
 ##   of its current value and its own mount;
-## - the counter law of design.md, after every call.
+## - the counter law of design.md, after every call;
+## - the table agrees with the sites: through the engine's probe, the ids
+##   each effect site owns and each `when` adopted are exactly the model's,
+##   every id in flight is held by exactly one of them, and nothing waits.
 NestedModel := [].{
 
 	## Run the session the bytes describe and say what it reached.
@@ -406,15 +409,69 @@ deliver = |m, id, res| match m.live.find_first(|r| r.id == id) {
 	}
 }
 
-## The model's own rules over the requests it holds in flight, which the
-## engine's ids in flight, commands and counters are held to after every
-## call.
-check_rules : M, Str -> {}
-check_rules = |m, what| {
+## The ids the probe shows each effect site owning and each `when` having
+## adopted, in document order, and what is queued and in flight.
+Held : { owns : List(List(U32)), adopted : List(List(U32)), waiting : List(U32), live : List(U32) }
+
+held_of : List(Core.Fact) -> Held
+held_of = |facts| {
+	var $kind = Root
+	var $held = { owns: [], adopted: [], waiting: [], live: [] }
+	for fact in facts {
+		match fact {
+			AtSite({ kind, .. }) => {
+				$kind = kind
+			}
+			Owns(ids) => {
+				$held = { ..$held, owns: $held.owns.append(ids) }
+			}
+			Adopted(ids) => {
+				if $kind == When {
+					$held = { ..$held, adopted: $held.adopted.append(ids) }
+				}
+			}
+			Queued({ follow_ups, live }) => {
+				$held = { ..$held, waiting: follow_ups, live }
+			}
+			_ => {}
+		}
+	}
+	$held
+}
+
+sorted : List(U32) -> List(U32)
+sorted = |ids| ids.sort_with(|a, b| if (a < b) Before else if (a > b) After else Same)
+
+## The table agrees with the sites (design.md, "Ids, results and
+## staleness": a site checks that it holds an id, so the table and the
+## sites must agree on who holds what).
+check_probe : Core.App({}), M, Str -> {}
+check_probe = |engine, m, what| {
+	held = held_of(Core.probe_tree(engine))
+	ids_of = |reqs| sorted(reqs.map(|r| r.id))
+	want_owns = [0, 1, 2].keep_if(|scope| alive(m, scope)).map(|scope| ids_of(m.live.keep_if(|r| r.scope == scope and r.holder == Own)))
+	got_owns = held.owns.map(sorted)
+	if got_owns != want_owns {
+		crash "nested: ${what}: effect sites own ${Str.inspect(got_owns)}, model ${Str.inspect(want_owns)}"
+	}
+	whens = if (get_or(m.shown, 0, False)) [WhenA, WhenB, WhenS] else [WhenA, WhenS]
+	want_adopted = whens.map(|h| ids_of(m.live.keep_if(|r| r.holder == h)))
+	got_adopted = held.adopted.map(sorted)
+	if got_adopted != want_adopted {
+		crash "nested: ${what}: whens adopted ${Str.inspect(got_adopted)}, model ${Str.inspect(want_adopted)}"
+	}
+	if !held.waiting.is_empty() {
+		crash "nested: ${what}: follow-ups ${Str.inspect(held.waiting)} still wait after the call"
+	}
+	everyone = sorted(held.owns.join().concat(held.adopted.join()))
+	if everyone != sorted(held.live) {
+		crash "nested: ${what}: the sites hold ${Str.inspect(everyone)}, the table has ${Str.inspect(held.live)} in flight"
+	}
 	# onlyKeptOrphans
-	for r in m.live {
-		if r.holder != Own and r.kind != Kept {
-			crash "nested: ${what}: orphan ${r.id.to_str()} is not a kept request"
+	for id in held.adopted.join() {
+		match m.live.find_first(|r| r.id == id) {
+			Ok(r) if r.kind == Kept => {}
+			_ => crash "nested: ${what}: orphan ${id.to_str()} is not a kept request"
 		}
 	}
 	# latestOwnsOnlyCurrent
@@ -471,7 +528,7 @@ check = |{ engine, dom, effects }, m, what| {
 	if Core.settled(engine).is_err() {
 		crash "nested: ${what}: a reader was left stale"
 	}
-	check_rules(m, what)
+	check_probe(engine, m, what)
 }
 
 pick : M, U8 -> U32

@@ -88,3 +88,12 @@ expect {
 			["arm64mac", "x64musl", "x64mac", "x64win"].all(|target| CompilerProfile.effective({ ..given, target }) == "speed") and
 				CompilerProfile.notice(given) == "SKIP native-fuzz --opt=speed on nightly-2026-11-18-a520eed: https://github.com/roc-lang/roc/issues/13197; using --opt=size, with every behavior check retained."
 }
+
+## The walk runners' fallback reaches only the repository's walk builds: an
+## ordinary native build at speed on the same compiler is unchanged.
+expect {
+	given = { compiler: "nightly-2026-11-19-54c51c9", target: "native-walk", requested: "speed" }
+	CompilerProfile.effective(given) == "size" and
+		CompilerProfile.effective({ ..given, compiler: "nightly-2026-11-19-future" }) == "speed" and
+			["arm64mac", "x64musl", "x64mac", "x64win"].all(|target| CompilerProfile.effective({ ..given, target }) == "speed")
+}

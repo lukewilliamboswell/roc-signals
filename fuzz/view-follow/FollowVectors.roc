@@ -49,7 +49,10 @@ FollowVectors := [].{
 	## the table's starting rows, the view's query and window, and its turns.
 	Vector : { seed : U64, ratio : U64, floor : U64, rows : List((U64, U64)), query : U64, window : Window, turns : List(Turn) }
 
-	## Every vector, named by its seed.
+	## Every vector, named by its seed. `oracle/tables` writes this list from
+	## its transliteration of `TableCore.roc`, `View.roc` and the table view site's `Changed`
+	## (`blueprint run oracle`, which fails if it differs), and keeps
+	## everything above it as it is: change the model there, never the list.
 	vectors : List(Vector)
 	vectors =
 		[

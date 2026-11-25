@@ -1,5 +1,6 @@
 import cli.Path
 import Checks
+import CompilerProfile
 import FuzzPlan
 import Proc
 import SpecSuite
@@ -98,19 +99,33 @@ Slow := [].{
 		Ok(round_trips.concat(files.drop_if(|f| round_trips.contains(f))))
 	}
 
+	## The optimisation a walk runner is built at: `speed`, unless the
+	## compiler is an exact `native-walk` row of `cli/compiler-profiles.tsv`.
+	## TODO compiler: nightlies 2026-11-18 and 2026-11-19 never finish a walk
+	## runner's `--opt=speed` build, and 0.1.0_RC1 does, so nothing is filed;
+	## remove those rows once the pinned compiler is past them (design.md,
+	## compiler limitations). The tooling target keeps the row off every
+	## ordinary native build of the same compiler.
+	walk_opt : SpecSuite.Options -> Str
+	walk_opt = |o| CompilerProfile.effective({ compiler: o.nightly, target: "native-walk", requested: "speed" })
+
 	## Walk every spec app with its native spec runner, in parallel: a
 	## seeded walk of user events and browser services from a fresh mount,
 	## its worker jobs run for real, settled and counter-checked after every
 	## step, which must leave nothing allocated (`RUNNER --walk`).
 	walks! : SpecSuite.Options => Try(List(Str), _)
 	walks! = |o| {
+		notice = CompilerProfile.notice({ compiler: o.nightly, target: "native-walk", requested: "speed" })
+		if !notice.is_empty() {
+			Proc.note!(notice)
+		}
 		var $builds = []
 		for name in Slow.walk_apps {
 			Path.create_all!(Path.utf8("${o.build_dir}/walk/${name}"))?
-			$builds = $builds.append(SpecSuite.build_job(o, "speed", "${SpecSuite.dir_of(name)}/main.roc", o.target, Slow.walker_of(o, name)))
+			$builds = $builds.append(SpecSuite.build_job(o, Slow.walk_opt(o), "${SpecSuite.dir_of(name)}/main.roc", o.target, Slow.walker_of(o, name)))
 		}
 		built = Proc.parallel!($builds, Proc.compiler_jobs!(App)?)?
-		match List.map2(Slow.walk_apps, built, |name, r| (name, r.code)).keep_if(|(_, c)| c != 0).first() {
+		match List.map2(Slow.walk_apps, built, |name, r| (name, r.code)).keep_if(|(_, c)| !SpecSuite.build_succeeded(c)).first() {
 			Ok((name, c)) => return Err(BuildFailed("walk runner ${name}: build exited with ${c.to_str()}"))
 			Err(_) => {}
 		}

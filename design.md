@@ -576,6 +576,12 @@ The engine therefore needs no node table, no erased value registry and no
 type tags: the closure's own captures are the typed storage, and the only
 dispatch is the message.
 
+A site also answers a fourth message, `Describe`, which is a harness's
+question and outside the reactive model (see [The probe](#the-probe)): the
+site notes what it holds and asks its children. It is sent only to a copy
+of the tree that is then dropped, never in a turn, so no site decides
+anything by it and no answer is read back by the engine.
+
 ### Contexts, layers and cells
 
 A site's environment is a typed context:
@@ -1256,8 +1262,16 @@ State lives in three places, and each is written in its own way:
   cell replaces it. A decision composed second takes its reading from the
   environment `first` returned:
   `draft.update(|_| "").also(Engine.handle_by(draft.signal(), ..))` reads the
-  emptied draft. Both handlers have the same payload type, including when
-  that payload is the files of one event.
+  emptied draft. Writes compose: whatever `first` wrote, a local state or a
+  cell, a table's row included, is what `second` and its reading see. What
+  is computed from state is not recomputed between them. A `derive` or a
+  `resource` layer in that environment, and an `each` row's item, hold the
+  value of the last pass, before this event, until the event's own pass
+  recomputes them; a reading that combines a state `first` wrote with a
+  `derive` of it therefore sees the new state beside the old derived value.
+  A decision that needs a value computed from `first`'s write reads what
+  that value is computed from, not its `derive`. Both handlers have the same
+  payload type, including when that payload is the files of one event.
 - **One event is one atomic transition.** All writes made while an event
   fires are in place before any observation runs.
 - **A reset is a write the transition includes.** The generated reset of a
@@ -1348,6 +1362,17 @@ Rules:
 | Hide a region with an attribute or class | Its sites stay live | Nodes stay |
 | Write a store cell | The cell and everything mounted survive; its readers refresh | Update only changed holes |
 | Dispose the root | Dispose everything it owns; the instance drops the store | Remove its nodes |
+
+A turn decides each site's structure once, from what the turn left: a
+`when`, `switch` or `remount_on` reads its selector or key once, an `each`
+site reads its list and reconciles once, and a table view changes its rows
+drawn once (see [One turn](#one-turn)). So no scope is disposed and created
+again within one turn. A scope whose branch, case, key or row is the same
+after the turn as before it is kept, whatever the turn wrote between: a
+selector written away and back in one event, or a table's row removed and
+inserted again by one event, leaves its scope as it was. A scope ends
+within a turn only because its identity changed, and the scope created for
+the new identity is new.
 
 State that must survive filtering, pagination or route changes belongs in the
 store: a cell, or a field of a table's row. Keeping a scope alive is never
@@ -1517,11 +1542,24 @@ after the pass refreshes that layer's subtree at its own site, where the
 layers written below it join in the same way. The walk visits the sites on
 the event's path and evaluates nothing outside the subtrees it refreshes.
 
-The walk stops at a site whose block was built since the event descended
-through it. The saved child positions below the site refer to the disposed
-block, and the new block already reflects the turn's writes. A row that
-reuses a slot has its template's positions down to its first such site,
-which also stops the walk. A retained row keeps its slot.
+The walk follows the event's path by child positions, not by identities,
+and the turn may have changed what lies on it. Positions change only where
+the turn built a scope: a `when`, `switch`, `remount_on` or `placeholder`
+that built its block, in the pass or in a refresh the walk made, or a row
+the pass created, which may take the slot of a row it removed. Below such a
+site the event's positions name what the new block holds, not the event's
+path, so the walk never enters a block the turn built: a site that chooses
+its block stops the walk when it built that block after the event came down
+through it. Nothing there waits, since the block was built from the values
+the turn left. Rows of one `each` or table view share their template, so a
+new row in a reused slot has the old row's positions down to its first
+site that chooses its block, which was built with the row and stops the
+walk; a slot that holds no row ends it, and a kept row keeps its slot
+wherever it moves. A written layer whose scope the turn disposed is not
+refreshed anywhere: its value goes with its scope, as if the write had
+never been made, and it counts nothing in `dirty_source_roots`. Nothing is lost that a reader could see, since a
+layer is read only inside its own scope, and the event's writes to cells
+and to surviving layers stand.
 
 Effect results and follow-ups are turns of their own, applied in arrival
 order, except that a report replaced in place keeps the place of its
@@ -3197,11 +3235,12 @@ inference:
   sets the layer to `resolve(s, a, res)` with the value `a` it was issued for.
   The layer prunes like `derive`, which means the site holds the previous
   value while `pending` and `resolve` run; they receive it shared, so a large layer
-  should be rebuilt rather than updated in place. Inside a row an answer
-  refreshes the site's own subtree at once, since the root's Changed pass
-  cannot reach the layer by signature there; elsewhere the site reports its
-  layer upward, and its static reads include its own layer so that pass
-  finds it. The site is a scope: disposing it disposes its body and applies
+  should be rebuilt rather than updated in place. An answer that changes
+  the layer refreshes the site's own subtree at once, at any depth, and
+  reports no write upward: it writes nothing else, so no pass above has
+  anything to settle first, and only the site's subtree can read the layer
+  (see [One turn](#one-turn)). An answer that folds to an equal value
+  refreshes nothing. The site is a scope: disposing it disposes its body and applies
   the per-kind rules to its requests, and an admitted answer reparented to a
   surviving ancestor writes the retired layer, a snapshot, so the write is
   skipped and counted. Each request a site owns records its position in the
@@ -3314,7 +3353,11 @@ carry the browser's timer coarsening, reported as measured rather than
 corrected. By default it holds sizes, names and times, never payload bytes.
 Its cost is a few clock reads per job, and none for a turn nobody asked to
 see. The engine's own account stays the work record: the monitor reads it
-and adds nothing to it.
+and adds nothing to it. The engine's probe ([The probe](#the-probe)) is
+observation in the same sense, for harnesses only: the engine writes its
+facts after it has acted and never reads one back, so a harness that
+records a session sees the same commands, counters and results as one that
+does not.
 
 ### `dbg`
 
@@ -4829,6 +4872,10 @@ Wasm memory growth is an allocator mechanism, not a resource policy. Persistent
 columns and free lists must plateau under repeated valid activity; soak runs
 assert it.
 
+The engine's probe ([The probe](#the-probe)) keeps no bound on the facts it
+records, by design: an instance a host runs never records, and only a
+harness starts recording and takes the facts, after every step it runs.
+
 ## Testing Architecture
 
 ### The `.scm` spec language
@@ -5078,8 +5125,8 @@ across the supported same-origin document navigations and reloads;
 A fresh tab starts false. The native model preserves this browser fact,
 separately from a new document's reset CloseWatcher cancellation allowance.
 
-This carry-over deliberately corrects the earlier assumption that all
-activation resets on a new document. A plain-HTML Chrome contract verifies
+Activation does not all reset on a new document. A plain-HTML Chrome
+contract verifies
 new document identity, expired transient activation, retained sticky
 activation and the later real leave dialog. It agrees with the
 [upstream same-origin activation test](https://github.com/web-platform-tests/wpt/blob/master/html/user-activation/navigate-to-sameorigin.html)
@@ -5426,7 +5473,7 @@ metric: soak plateaus assert it.
 | `set_text` | `SETTEXT` and `TEXT` commands |
 | `set_value`, `set_checked` | Control state the engine set: `PROP` and `HPROP` for the `value` / `checked` rows, and `INST` property holes of those rows |
 | `patches_emitted` | DOM commands (opcodes 1–12 and `PROP`/`HPROP`, 21–22) |
-| `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values; for a table view, each read of its query or its window and each row it places with the query's `keep` and `sort` (two for a written key it absorbs, the row before and after; every row of the table for a mount or a rebuild). A table view's comparisons are not counted |
+| `derived_calls_into_roc` | Signal reads the engine makes to propagate, one for each call of a signal's reader however many signals it combines (a `map2`, a record of signals or an interpolated text is one). At mount: each hole, a text, attribute, property or reference given as a signal, even one that reads nothing (a key handler's keymap is a property hole, read once as its element is built, though a constant keymap reads no layer); a literal is not a hole, and the authoring API makes a constant text, attribute or property one, the condition of a `when`, the value of a `switch`, the key of a `remount_on`, a placeholder's readiness, the input of a `derive` or a `resource`, the list of an `each`, the watched value of every effect site (`watch_changes` and `on_post` included, though they issue nothing then) and the value of a `guard_leave`. In a pass, each of those again where its signature meets what the pass carries, and each hole a browser echo marked; a placeholder's readiness again on its activation. A row created by a mount, a reconciliation or a view's window: each varying hole of its template once (a constant property, a handler and a nested site's anchor count none; the nested site counts its own). A kept row marked by the turn: each of its live holes that reads what marked it (the row, an outer layer or its selection), and a hole a browser echo marked. A cleanup's value when its scope is disposed. A table view: each read of its query or its window (both at mount; in a pass, each whose signature meets what the pass carries) and each row it places with the query's `keep` and `sort`, one for the pair: every row of the table at mount and for a rebuild (missed writes, a whole rewrite, changes large next to the table), one for each side of a written key it absorbs on which the row exists (two for an update, one for an insert or a removal), and every row of the table again when the query changed to an unequal value. Not counted: an `each` site's key function, key and item comparisons, the per-row value of a keyed selection, handlers, decisions and their readings (`handle_by`, `react_by`), plans, reactions, reducers, `pending` and `resolve`, a `keep_current` orphan's question, a table view's comparisons, and the settle check, whose pass runs on a copy whose counters are dropped |
 | `scopes_created` / `scopes_disposed` | Scopes mounted / disposed: `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites |
 | `dirty_source_roots` | What a turn wrote: one for each cell, and one for each layer when its readers are refreshed, whether its site started the pass, joined it or was reached by the walk after it (a layer disposed before then counts none; a `resource` answer that folds to an equal value writes none, and a decision that returns no write counts nothing) |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
@@ -5468,6 +5515,83 @@ operations on its own type are tested the same way. This is the check that
 sees a transition that left out a reset or wrote the wrong cell of the right
 type, which no propagation check can.
 
+### The reference semantics
+
+What a turn means is stated twice: in prose here, and as an executable
+reference in Lean 4 under `oracle/`. `oracle/turns` holds a kernel of
+programs as data, the reference (the page from scratch, and a turn as
+"apply the event's writes, then render again": a local state lives exactly
+while its identity is live, and one event's writes compose in order) and,
+separately, a second specification of the work a turn may do (which
+readers it must evaluate, what each must see, which texts it sets and
+which scopes it creates). `oracle/tables` transliterates a table's changes
+and its views and states what the record and a view mean beside them. Each
+module says what it is trusted for; the incremental algorithms there,
+including the known-bad ones, are what is checked, never a reference.
+
+The reference is the statement of a turn's meaning that the engine and the
+Roc references inside the fuzz targets are held to. It shares no code with
+them: they meet only through checked-in vector files the Lean side writes
+(`fuzz/structure/vectors.trace` and its known-bad companion
+`vectors-bad.trace`, whose grammar is in `oracle/README.md`, and the
+cover sets of `fuzz/table-changes` and `fuzz/view-follow`, the `vectors`
+lists of `ChangeVectors.roc` and `FollowVectors.roc`, written as Roc
+values). Each of those
+targets replays its vectors twice: its top-level `expect`s against its Roc
+reference alone, and its fixed examples through the real code (the engine,
+or `TableCore` and `View`), so every replay holds both to Lean. Every
+known-bad structure trace must be rejected at the step Lean rejects it: by
+the value model, or, for a trace whose page is right and whose work is not,
+by the count model. When the engine, a Roc reference and Lean disagree,
+Lean decides, unless this document says otherwise; a disagreement between
+Lean and this document is a design change, made here first and then in
+Lean, the Roc reference and the vectors, in one change. Lean runs on a
+contributor's machine (`blueprint run oracle`), not in CI; the vectors it
+wrote are what CI replays.
+
+### The probe
+
+The command stream says what a turn emitted; the probe says what the engine
+holds and what a turn did, so a harness can check rules the commands cannot
+show. It is two functions of `Core` beside `Core.settled`, for test
+platforms and harnesses only; nothing an app can name reaches it.
+
+- `Core.probe_tree` describes the site tree as it is stored, in document
+  order: each site's kind, its layer, whether it waits for a pass, the
+  signal it reads itself and the cap it was mounted under; each block's
+  reported reads, each hole's mask and last value, and each child with the
+  reads its parent tests a pass against; each drawn row with the marks a
+  pass may give it and the reads its nested sites are tested against; the
+  node ids every site and row holds, the request ids each effect site owns
+  and the orphans each site adopted; each table view's ordered keys, window
+  and version; and the node id allocator, the follow-ups waiting and the
+  requests in flight. Like the settle check, it asks a copy of the tree
+  that is then dropped (`Describe`).
+- `Core.probe_start` and `Core.probe_take` record what turns do: the start
+  of each turn; the pass that settles it, from the root for cells or from
+  the site of its outermost written layer (or of an asynchronous layer an
+  answer changed); each waiting layer that joins it or that the walk after
+  it reaches; each call into a child or a drawn row; each hole and row hole
+  evaluated, with the mask that woke it and whether it kept its value; each
+  `derive` input read and each branch decided; and each site mounted in a
+  turn, with what it reads as mounted and what its static reads give.
+
+The rule for a fact: a stored fact is read from the storage a pass tests,
+never kept or recomputed beside it, and an event fact is noted at the call
+it names, beside the counter that call bumps. So a fact cannot be right
+while the engine is wrong about the thing the fact describes.
+
+The probe is observation ([Observation](#observation)): the engine writes
+facts and never reads one back, so recording changes no command, no counter
+and no scheduling. An instance a host runs never starts recording: a note
+then costs a test of one tag and allocates nothing, and a fact that costs
+work to build (a static read mask) is built only while recording. Only a
+harness starts recording and only a harness takes the facts, which is why
+what the engine keeps between two takes needs no bound of its own: it grows
+with the turns the harness runs between takes, and the harness takes them
+after every step. The structure target and the effect-channel target read
+it after every step; what each requires of it is below.
+
 ### Fuzzing, walks, soak and contract tests
 
 Each kind of test lives where its subject does. An app's behaviour is its
@@ -5482,15 +5606,89 @@ know nothing of the platform.
   beside the effect-channel and controls test apps; roc-fuzz apps on the
   engine package) decode arbitrary bytes into valid programs and check the
   engine against a reference model: keyed reconciliation, tables and their
-  views (generated keyed writes, whole rewrites, many writes in one event,
-  changes of query and window, and events that write several of them at
-  once, against a model that filters and sorts the table from scratch and
-  takes each view from the window before an event to the window after it
-  in one change), effect lifecycle (issue, supersede, dispose,
-  reparent, deliver, refuse, cancel, stale), generated site trees with guard
-  sites checked against whether any live guard reads true, and the
-  spec, wire and port formats. Their oracles, not their inputs, carry the
-  value.
+  views (`fuzz/table-view`: generated keyed writes, whole rewrites, many
+  writes in one event, changes of query and window, and events that write
+  several of them at once, against a model that filters and sorts the
+  table from scratch and takes each view from the window before an event
+  to the window after it in one change), the effect channel (below),
+  generated site trees (below), guard sites checked against whether any
+  live guard reads true, and the spec, wire and port formats. Every target
+  that drives the engine runs the settle check after every step. Their
+  oracles, not their inputs, carry the value.
+- **Generated structure** (`fuzz/structure`) decodes bytes into a site tree
+  over every site kind, bounded in depth and size, and a session of clicks
+  and timer and worker-job answers over it, so the settle check meets
+  nestings no fixed app contains. When every write goes to the root state,
+  the page is a function of that state, and after every step it must equal a
+  fresh mount started at it. The settle check sees where a turn ends, not
+  what it emitted on the way, so the target also holds each turn to what a
+  reader may see. One click may write two layers, and a generated reader
+  shows a layer, a `derive` of it and a second layer together, in a text
+  and in a `watch`'s title: a turn may write a node once, never a node it
+  created, and a title must name a derived value that follows its layer. A
+  reader evaluated between two of an event's writes breaks one of these.
+  The generator stays monomorphic by nesting layers a fixed number deep: a
+  generator recursing through `state` would need polymorphic recursion.
+
+  The target's valued modes check the page against a **value model**
+  (`fuzz/structure/Reference.roc`), which imports nothing of the platform:
+  the page drawn from scratch for the tree and the local states alive, and
+  a click as "apply every write of the handler, in order, then draw again",
+  where a local state is carried exactly when its structural identity (its
+  path of child positions, branches taken and row keys) is drawn before and
+  after. Every state is written there, resources issue nothing and the
+  session only clicks. After every click the engine's page must show the
+  model's texts in document order, button labels included, and offer as
+  many click candidates as the model has buttons. That comparison sees a
+  kept scope whose state started again, a state carried across a removal
+  and a structural reader that settled on one new value beside one old one.
+  Structural readers may follow two values at once, rows keep their key
+  while their item changes and keys leave and come back, derived values
+  include one that maps two inputs to one, and the decoder is biased toward
+  one shape bytes rarely build: a button writing an outer and an inner
+  state with a reader of both below, one of them through a derived value,
+  holding state. A pure tally of the seeded series (clicks writing two
+  states one structural reader follows, of those some through a derived
+  value, clicks disposing a state not at its start, rows drawn again after
+  a removal, kept rows whose item changed) is held by `expect`s to minimum
+  shares of its clicks, set at about half the shares at which the series
+  finds an event's writes settled by two passes and a kept row's state
+  reset, so a generator change that stops reaching these shapes fails
+  rather than passes vacuously. One mode runs the programs and clicks of
+  the structure vectors through the engine, so the engine meets every tree
+  the value model is held to.
+
+  In the valued modes every click is also held to a **count and shape
+  model** (`fuzz/structure/Counts.roc`, which imports nothing of the
+  platform): the signal reads `derived_calls_into_roc` counts, the scopes
+  created and disposed, and the written layers refreshed, which
+  `dirty_source_roots` counts and the probe must show in the model's order.
+  The model compares the page before the turn with the page after it. A
+  reader is due when its scope is new, or when it reads, on its own path, a
+  layer the turn wrote or a `derive`, `resource` or row item whose value the
+  turn changed; a written state is refreshed whatever value it was given,
+  and a `derive` that recomputes an equal value carries nothing below it.
+  The same model counted the kernel's way (which leaves out guards, form
+  controls and watches, and counts a `Pair`'s text and watch as one reader)
+  must give every step's count in the structure vectors. A write that gives
+  a state the value it had is checked on its own: its turn emits no
+  command, and `dirty_source_roots` and its reader's evaluation still count
+  it.
+
+  After every step the target also checks the probe, whatever the mode
+  (`fuzz/structure/ProbeRules.roc`). No site waits and the root holds no
+  write set. Each child's reads, a drawn row's marks and its nested sites'
+  reads cover every mask held below them except the child site's own
+  layer: the hypothesis under which a pass that skips a child skips no
+  reader. The node ids the sites hold are exactly the live ones, none
+  twice. Within a turn no hole or row hole is evaluated twice and no
+  `derive` input or branch is read twice at one place; a `derive` is read
+  before anything below it is evaluated; a turn runs at most one pass and
+  refreshes each written layer once, below where that pass started; and a
+  site mounted in a turn reads nothing beyond its static reads and the cap
+  it was mounted under. A site mounted by the first mount is not checked by
+  that last rule, since recording starts once the instance exists; it is
+  when a turn mounts it again.
 - **The effect channel** (`tests/apps/effects/fuzz-channel.roc`) drives
   issue, supersede, dispose, reparent, deliver, refuse, cancel and stale
   results over timers, HTTP requests, worker jobs, port calls and
@@ -5506,13 +5704,19 @@ know nothing of the platform.
   paths, owned lists or table: it numbers ids itself and records each
   request's scope, mount, issuing step, kind and holder, and the engine's
   commands, counters, ids in flight and states shown must equal its own.
-  It requires that an orphan is a kept request, that a scoped request of a
-  disposed site is cancelled and its late result stale, that an orphan's
-  write to a state its scope's disposal retired is skipped and counted and
-  never reaches a state mounted again in its place, that what a
-  `watch_latest` site gave up is cancelled, that a live `watch_latest`
-  site holds only requests of its current value and its own mount, and the
-  counter law ([Counters](#counters)) after every call.
+  It requires that
+  an orphan is a kept request, that a scoped request of a disposed site is
+  cancelled and its late result stale, that an orphan's write to a state
+  its scope's disposal retired is skipped and counted and never reaches a
+  state mounted again in its place, that what a `watch_latest` site gave
+  up is cancelled, and the counter law ([Counters](#counters)) after every
+  call. Through the probe, the request ids each effect site owns and the
+  orphans each `when` adopted must be exactly those the model gives each
+  site, and together they must cover the requests in flight once each (the
+  table agrees with the sites, so a site's own check that it holds an id
+  never has to refuse a result the table routed to it); a live
+  `watch_latest` site owns only requests of its current value and its own
+  mount, and no follow-up waits after a call.
 - **Pure cores** have targets of their own with no engine in the loop,
   built in the `FuzzSyntax.roc` suite. Each core is a module that shares
   nothing with the sites, so its target calls it directly with inputs no
@@ -5539,9 +5743,9 @@ know nothing of the platform.
     longest run that kept its order, and absorbing places at most two rows
     for each written key.
   - Both table targets also replay fixed histories whose every turn
-    states its outcome, written as Roc values beside the target
-    (`ChangeVectors.roc`, `FollowVectors.roc`): a top-level `expect` holds
-    the target's model to them, and its fixed examples hold the real code
+    states its outcome, Roc values beside the target that `oracle/tables`
+    writes (`ChangeVectors.roc`, `FollowVectors.roc`): a top-level `expect`
+    holds the target's model to them, and its fixed examples hold the real code
     (`TableCore`, the generated modifier and `View`, and a table view
     site's change of its drawn rows) to them, so `fuzz-smoke` replays them
     too.
@@ -5609,20 +5813,6 @@ know nothing of the platform.
   mis-encoded command or a wrong `last` agree with themselves and pass.
   While the copy lives it shares the instance's storage, so the pass copies
   what it touches; it stays out of measured regions.
-- **Generated structure** (`fuzz/structure`) decodes bytes into a site tree
-  over every site kind, bounded in depth and size, and a session of clicks
-  and timer and worker-job answers over it, so the settle check meets
-  nestings no fixed app contains. When every write goes to the root state,
-  the page is a function of that state, and after every step it must equal a
-  fresh mount started at it. The settle check sees where a turn ends, not
-  what it emitted on the way, so the target also holds each turn to what a
-  reader may see. One click may write two layers, and a generated reader
-  shows a layer, a `derive` of it and a second layer together, in a text
-  and in a `watch`'s title: a turn may write a node once, never a node it
-  created, and a title must name a derived value that follows its layer. A
-  reader evaluated between two of an event's writes breaks one of these.
-  The generator stays monomorphic by nesting layers a fixed number deep: a
-  generator recursing through `state` would need polymorphic recursion.
 - **Soak.** Every app runs a long random walk in Chrome, with Wasm pages
   and live allocations asserted flat across repeated round trips. Natively,
   each app's round trip is an ordinary spec that the spec runner also
@@ -5648,7 +5838,44 @@ know nothing of the platform.
 - **Contract tests** (`tests/`) cover the host (`host.zig` tests: staging,
   containment, refusal after poison) and the runtime (`runtime.mjs` against the
   wire protocol: every opcode, payload encoding, effect performance and
-  cancellation, controlled inputs, containment and recovery).
+  cancellation, controlled inputs, containment and recovery). The ingress
+  queue's rules are checked over seeded sessions of the real runtime with
+  only the Wasm call and the browser's callbacks faked
+  (`tests/runtime/ingress-unit.mjs`): its two budgets, order by joining,
+  an occurrence after every earlier report and before every later one,
+  nothing non-lossy dropped short of a poison, and a poison only from a
+  real feedback loop.
+
+### What the checks cannot see
+
+Each check above is bounded by what it is about, and these bounds are
+part of the arrangement, not gaps a passing run closes:
+
+- The reference is about the programs its kernel can express, and the
+  structure vectors about the trees the Roc generator can build. The
+  generator's typed levels reach scopes four deep below the root's, with
+  one layer inside a row and no scope inside a row of a row; a property
+  that needs a deeper shape, a timer, a job or an effect is not covered by
+  the reference or the vectors. Depth beyond the generator's levels is
+  tested only on the pure cores, which take indices and lengths no app
+  reaches.
+- The value model compares texts in document order and the number of
+  buttons. Attributes, properties and the order of nodes without text are
+  outside it, and it counts no evaluations; the count model counts them,
+  only for valued programs.
+- That a hole's mask covers what its closure reads is checked directly
+  only for generated programs, whose reads the count model knows. In an
+  app, the settle check sees a missing read only once a walk changes what
+  was missed.
+- `Seq`'s chunks are checked by `fuzz/view-follow` against a plain list,
+  not modelled in Lean.
+- The proofs in `oracle/` cover a table's changes and the static fragment
+  of propagation, and each is about its model, not about the engine; the
+  vectors are what tie a model to the code.
+- The settle check sees propagation only, and the value model what a
+  generated handler wrote; neither sees a wrong reducer or decision, which
+  agrees with itself. That is what [Decisions as
+  functions](#decisions-as-functions) checks.
 
 ## Tooling
 
@@ -5713,6 +5940,7 @@ of them is platform semantics.
 | [roc-lang/roc#13195](https://github.com/roc-lang/roc/issues/13195) | Official artifact `release-fast-e17a7826` and published nightlies `nightly-2026-11-18-a520eed` and `nightly-2026-11-19-54c51c9` retain hosted imports reachable only from unexported platform provides in development Wasm; the same source on `nightly-2026-11-15-f25da45` drops them | The worker host keeps its closed import vocabulary and refuses native spec-runner I/O. On those two published nightlies, CLI development builds and repository builders print `SKIP` for that compiler profile and use `--opt=size`, which passes the unchanged worker stories with only the declared worker imports. One complete match table, `cli/compiler-profiles.tsv`, serves the CLI, Roc scripts and direct Node CI driver. Every behavior check remains enabled; results identify the effective size profile, allocation guards use its guarantees, and shared size artifacts are built and measured once. Other compiler versions retry development builds automatically. No host imports, stubs or engine semantics change |
 | [roc-lang/roc#13196](https://github.com/roc-lang/roc/issues/13196) | On `nightly-2026-11-18-a520eed` and official artifact `release-fast-e17a7826`, an optimized native JSON reader carrying text, a position and a set copies the set on each insertion after reading a string. The same function-free, file-free source is linear on `nightly-2026-11-15-f25da45`; this is separate from #13081 | `PortJson.State` is an opaque cursor over one private boxed body. Advancing it allocates a constant-sized box, preserving linear total work at a constant-factor cost on the older compiler. Its dictionary frames retain only open dictionaries' decoded names. The port-json fuzz target bounds cumulative requested bytes as well as peak memory, with large distinct-key fixed inputs; an unboxed cursor returns only after the upstream fix and those guards establish linear work |
 | [roc-lang/roc#13197](https://github.com/roc-lang/roc/issues/13197) | Official artifact `release-fast-e17a7826` segfaults in post-check `lambda_solve` when optimizing the wire and placeholder lifecycle fuzz targets. The identical sources check on both compilers and pass optimized fixed replays on `nightly-2026-11-15-f25da45` | Optimized fixed replays remain required. The shared build-profile policy selects `--opt=size` instead of speed for native fuzz builds on `nightly-2026-11-18-a520eed` and `nightly-2026-11-19-54c51c9`, prints the substitution and records the actual profile; unknown compiler versions retry speed. Every member, saved input, model and leak check still runs. A compiler or replay failure remains a failed gate, and no compiler patch is part of the platform |
+| Not filed: fixed in `0.1.0_RC1` (a walk runner's `--opt=speed` build never finishes) | On `nightly-2026-11-18-a520eed` and `nightly-2026-11-19-54c51c9`, `roc build --opt=speed --target=x64musl` of a spec app's `main.roc` (the native runner `check-slow` walks) runs past 25 minutes with one core busy; `--opt=size` builds it in about 30 s, and `0.1.0_RC1` builds it at speed in 5 minutes | `cli/compiler-profiles.tsv` maps those two compilers' `native-walk` builds to `--opt=size`, a tooling target no ordinary build asks for, so only the walks change profile; every walk and its leak check still run, and `check-slow` prints the substitution. Remove the rows once the pinned compiler is past them |
 | [roc-lang/roc#13217](https://github.com/roc-lang/roc/issues/13217) | On `nightly-2026-11-18-a520eed`, parsing a CBOR `Value` through roc-cbor 0.6.3's generic whole-item entrypoint retains one allocation, even for one integer byte; the same ordinary native program and strict fuzz replay release it on `nightly-2026-11-15-f25da45` | The wire fuzz target validates encoded bytes through `Cbor.Raw.from_bytes`, which enforces the same strict whole-item rules without constructing an unused recursive value tree. Every original input, codec round trip and leak check remains required. Remove the workaround note after the compiler fix; the raw validation remains sufficient for this property |
 | [roc-lang/roc#13194](https://github.com/roc-lang/roc/issues/13194) | On `nightly-2026-11-15-f25da45`, a Wasm dictionary moved through one opaque boxed holder allocates in proportion to all entries when reinserting after removal, in both development and size builds. Native direct-loop and some optimized engine shapes do not reproduce it; the cause is not established | The placeholder ready-owner index uses a private compressed U64 radix tree: at most 64 forks per traversal, at most two traversals per edit, and only live entries retained. Restore the builtin dictionary only after the upstream fix and development/shipping Wasm scaling controls prove that removal/reinsertion no longer copies the whole pending set |
 | [roc-lang/roc#12841](https://github.com/roc-lang/roc/issues/12841) | A list captured by two closures is copied on every update | One closure per site's storage |
@@ -6783,7 +7011,7 @@ that has run, in first-run order, with its run count.
 | 1–18 | Commands emitted, by opcode (`1` is `INST`, `4` `MOVE`, …) |
 | 19 | `set_value`: control values set (`PROP`/`HPROP` for property 1, and `INST` value property holes) |
 | 20 | `set_checked`: the same for `checked` |
-| 21 | Evaluations of app closures (`derived_calls_into_roc`) |
+| 21 | Signal reads made to propagate (`derived_calls_into_roc`, defined in [Work assertions](#work-assertions)) |
 | 22 | Rows removed by reconciliation, and rows that left a table view's window (`rows_removed`) |
 | 23 | Rows reused by a reconciliation that changed something (`rows_reused`) |
 | 24 | Kept rows whose item changed, and rows a view kept whose row in the table was written (`rows_updated`) |

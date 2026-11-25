@@ -31,7 +31,10 @@
 ## Protect the reactive model
 
 - Keep the engine in pure Roc in `platform/`. Every dynamic site is one closure
-  that owns its typed storage and answers `Fire`, `Changed` and `Dispose`. Do
+  that owns its typed storage and answers `Fire`, `Changed` and `Dispose`,
+  and a harness's `Describe`, which is outside the reactive model: it is
+  asked only of a copy that is dropped, and nothing in the engine reads its
+  answer. Do
   not introduce a node table, a value registry, runtime dependency discovery,
   host-side state, or a second reactive mechanism.
   No engine module imports a hosted function: a job's effects reach the
@@ -268,7 +271,10 @@
 - Keep observation passive. The runtime's monitor reports what the runtime
   and its pool did after they acted and never decides scheduling, a result
   or an order; everything it keeps is bounded, and an observer that
-  misbehaves is dropped rather than obeyed. Meet a measurement need by
+  misbehaves is dropped rather than obeyed. The engine's probe, for
+  harnesses only, is observation too: the engine notes its facts after it
+  acts and never reads one back, so a session recorded and one not
+  recorded emit the same commands and counters. Meet a measurement need by
   observing more, never by letting an observer steer.
 - Treat the command stream, event records, effect payloads, worker payloads,
   port messages, boot bytes and the program's declarations, and

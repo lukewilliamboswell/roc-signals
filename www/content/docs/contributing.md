@@ -40,6 +40,7 @@ recipe ready.
 | `fuzz/` | The platform's fuzz targets of the shared support (the spec, wire and port formats, generated site trees, and tables with their views) and of the engine's pure cores (read signatures and write sets, a table's changes, a view kept from them, the request lifecycle and the reconciliation plan) |
 | `examples/` | The example apps, each with its specs, any fuzz targets of its own pure logic (`fuzz-<subject>.roc`), and any JavaScript of its own beside it (the port handlers of the Reading List, the Status Page and the Million-Row Explorer, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`; the Log Explorer's `log-timings` element, `timings.mjs`, the Status Page's `latency-feed-monitor`, `feed-monitor.mjs`, and the Million-Row Explorer's `query-meter`, `meter.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
 | `cli/` | The source of `signals.roc`, the tool app authors run to create, serve, build and test an app (below) |
+| `oracle/` | The reference models in Lean 4 (`turns`, what a turn means; `tables`, a table's changes and its views) and the programs that write the fuzz targets' vector files (below, [The reference models](#the-reference-models)) |
 | `benchmarks/` | The js-framework-benchmark adapter |
 | `scripts/` | Roc scripts behind the tasks; shared modules in `scripts/src/` |
 | `www/` | This website; `www/samples/` holds every code sample the docs show, each a file `check` compiles and, for a sample app, tests |
@@ -134,6 +135,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run fuzz-smoke -- [TARGET...]` | Every registered fuzz target's fixed examples on plain optimized native builds, or the named targets; `-- --shard K/N` runs shard K of N, as CI does; never explores |
 | `blueprint run sizes -- [--runtime-only]` | Check shipped JavaScript Brotli sizes (gzip is reported); without the flag, also build and report each example's shipping module and development-only scripts |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign (600 s of exploration per target by default), local only: CI never runs one |
+| `blueprint run oracle` | Local only, never in CI: build the Lean reference models under `oracle/`, run their fixed checks and require every vector file they write to equal the checked-in one. Needs `lake` on `PATH` ([The reference models](#the-reference-models)) |
 | `blueprint run api` | Build and audit the API reference alone, including methods inherited through public aliases, without rebuilding the site examples |
 | `blueprint run site -- [--base-url URL] [--tool-url URL]` | Build the website, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
 | `blueprint run serve -- [DIR] [--port N]` | Serve `dist/` at `127.0.0.1:8000/roc-signals/`, its published path, or `DIR` at the root |
@@ -744,13 +746,20 @@ arbitrary bytes into valid programs and check the engine against a model:
 the effect channel's lifecycle including worker jobs, port calls and
 subscriptions, a gather's jobs settling at their positions and an outbox's
 posts, with a second model of effect sites in nested scopes,
-`tests/apps/effects/NestedModel.roc` (`fx-channel`,
-`tests/apps/effects/fuzz-channel.roc`), controlled inputs,
+`tests/apps/effects/NestedModel.roc`, that also reads the probe
+(`fx-channel`, `tests/apps/effects/fuzz-channel.roc`), controlled inputs,
 pointer gestures with held reports checked against an input-side model,
 and more than 4,095 `each` sites (`controls`,
 `tests/apps/controls/fuzz-controls.roc`), generated site trees
 (`fuzz/structure`, whose pure mode also compares the page with a fresh
-mount, so the settle check meets nestings no app contains), tables and
+mount, so the settle check meets nestings no app contains, and whose valued
+modes compare the page after every click with a value model,
+`fuzz/structure/Reference.roc`, that draws it from scratch for the local
+states alive, and the click's work with a count and shape model,
+`fuzz/structure/Counts.roc`; every mode checks the engine's probe after
+every step, `fuzz/structure/ProbeRules.roc`, and top-level `expect`s hold
+the seeded valued series to minimum shares of the shapes that expose
+ordering and identity bugs), tables and
 their views against a model that filters, sorts and windows the table from
 scratch, over keyed writes, whole rewrites and events that write the table,
 the query and the window together (`fuzz/table-view`), the `.scm`
@@ -769,14 +778,16 @@ sets against exact sets, at indices past 64), `fuzz/table-changes`
 drawn rows, against a filter, a sort and a slice of a plain list),
 `fuzz/fx-core` (`FxCore`'s request lifecycle against a model with an
 explicit depth for every follow-up) and `fuzz/reconcile` (`Reconcile.plan`
-applied to lists of up to thousands of keys). `fuzz/table-changes` and
-`fuzz/view-follow` also replay fixed histories whose every turn states its
-outcome, kept as Roc values beside each target (`ChangeVectors.roc`,
-`FollowVectors.roc`): `roc test` on the target's root replays them against
-its model and the real code and fails naming the history and the turn at
-which they disagree, and the target's fixed examples replay them through
-the real code, so `fuzz-smoke` does too. Add a history when a campaign
-finds a shape they miss, with the outcome the design says it must have.
+applied to lists of up to thousands of keys). `fuzz/structure` also
+replays the vector files the Lean reference models write.
+`fuzz/table-changes` and `fuzz/view-follow` also replay fixed histories
+whose every turn states its outcome, kept as Roc values beside each
+target (`ChangeVectors.roc`, `FollowVectors.roc`), whose lists the Lean
+reference models write ([The reference models](#the-reference-models)):
+`roc test` on the target's root replays them against its model and the
+real code and fails naming the history and the turn at which they
+disagree, and the target's fixed examples replay them through the real
+code, so `fuzz-smoke` does too.
 
 `fuzz/startup-placeholders` checks readiness and scoped replacement against a
 separate list-based FIFO/lifetime model. Its histories include cold-frame
@@ -910,10 +921,6 @@ look unchanged: every run builds every target it runs afresh.
 
 ### The plain and the instrumented builds
 
-The maintained targets pin roc-fuzz 0.6.2, which restores compatibility with
-`nightly-2026-11-13-03dce41` after its stricter duplicate-name check. The
-fixed-example inputs and public fuzz API are unchanged by that patch.
-
 Fuzz builds print compiler phase timings. Use those alongside the replay
 report to distinguish time spent compiling the optimized target from time
 spent running its fixed examples.
@@ -979,6 +986,46 @@ applies `Engine.sort_by` to the pure plan.
 an independent fragment encoder. Conduit's platform-free `fuzz-routes` checks
 decoded route parts; pure location tests and paired specs cover its fragment
 layout and browser navigation.
+
+## The reference models
+
+`oracle/` holds the reference semantics in Lean 4: `oracle/turns` says
+what a turn means (the page, the local state that survives, how one
+event's writes compose, which readers a turn must evaluate), and
+`oracle/tables` transliterates a table's changes and its views and checks
+them exhaustively over small scopes. They write the vector files that
+`fuzz/structure`, `fuzz/table-changes` and `fuzz/view-follow` replay, so
+the Roc reference inside each target is held to the Lean one.
+`oracle/README.md` lists the modules, what each is trusted for, and the
+grammar of every vector file.
+
+`fuzz/structure` imports its vector files as text (`Vectors.roc`). The
+table targets' vectors are Roc values: `oracle/tables` writes the
+`vectors` list at the end of `ChangeVectors.roc` and `FollowVectors.roc`,
+and keeps the types and comments above it as they are. `roc test` on the target's
+root replays every vector against the target's Roc reference alone and
+fails naming the vector and the step at which it disagrees; the structure
+target also requires its value model to reject every known-bad trace in
+`vectors-bad.trace` as the trace's label says. The target's fixed examples
+run the same vectors through the real code, so `fuzz-smoke` holds the
+engine, `TableCore` and `View` to them too.
+
+Install [elan](https://github.com/leanprover/elan), which installs `lake`
+in `~/.elan/bin` and reads the Lean release from `oracle/lean-toolchain`;
+the projects need nothing else and nothing from the network. With that
+directory on `PATH` (`PATH=$HOME/.elan/bin:$PATH`),
+`blueprint run oracle` builds both, runs their gates and fails if a vector
+file it writes differs from the checked-in one. CI does not install Lean,
+so run it yourself whenever a change touches `oracle/` or a vector file.
+
+A change to what a turn, a table or a table view means lands in one pull
+request, in this order: `design.md`; the Lean model; the Roc reference in
+the fuzz target; the vector files, written by the models (copy them from
+`.build/oracle/` after a run). A vector file, or a vector list, is never
+edited by hand. When
+the engine and a Lean model disagree, the model decides unless `design.md`
+says otherwise; a disagreement between the model and `design.md` is a
+design change.
 
 ## Performance
 

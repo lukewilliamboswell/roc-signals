@@ -35,7 +35,10 @@ ChangeVectors := [].{
 	## A history of one cell from its starting rows.
 	Vector : { seed : U64, start : List((U64, U64)), turns : List(Turn) }
 
-	## Every vector, named by its seed.
+	## Every vector, named by its seed. `oracle/tables` writes this list from
+	## its transliteration of `TableCore.roc` and the cell's generated modifier
+	## (`blueprint run oracle`, which fails if it differs), and keeps
+	## everything above it as it is: change the model there, never the list.
 	vectors : List(Vector)
 	vectors =
 		[
