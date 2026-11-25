@@ -56,9 +56,17 @@ try {
   });
   await page.goto(`http://127.0.0.1:${port}/`);
   await page.waitForFunction(() => document.querySelector('input[aria-label="Jobs"]') !== null, { timeout: 30000 });
-  const loaded = await page.evaluate(() => performance.getEntriesByType("resource").map((e) => new URL(e.name).pathname));
+  // The prerendered form can already be visible while the Wasm module is
+  // still downloading. Wait until the browser has recorded each load.
+  await page.waitForFunction(() => {
+    const hashedAssets = performance.getEntriesByType("resource")
+      .map((entry) => new URL(entry.name).pathname)
+      .filter((pathname) => /^\/assets\/[0-9a-f]{16}\//.test(pathname));
+    return ["app.wasm", "runtime.mjs", "style.css"]
+      .every((file) => hashedAssets.some((pathname) => pathname.endsWith(`/${file}`)));
+  }, { timeout: 30000 });
+  check(true, "the page loads app.wasm, runtime.mjs and its style from the hashed directory");
   const hashed = /^\/assets\/[0-9a-f]{16}\//;
-  check(["app.wasm", "runtime.mjs", "style.css"].every((f) => loaded.some((p) => hashed.test(p) && p.endsWith(`/${f}`))), "the page loads app.wasm, runtime.mjs and its style from the hashed directory");
   const robots = await fetch(`http://127.0.0.1:${port}/robots.txt`);
   check(robots.status === 200, "a file from public/ is served under its own name");
 

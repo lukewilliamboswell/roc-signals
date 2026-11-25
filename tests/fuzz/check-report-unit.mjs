@@ -52,12 +52,14 @@ async function refused(label, mutate, expected, fixtureOptions) {
 }
 function cli(test, overrides = {}) {
   const options = { ...test.options, ...overrides };
+  const entry = overrides.entry ?? "entry.roc";
+  if (entry !== "entry.roc") fs.copyFileSync(path.join(test.directory, "entry.roc"), path.join(test.directory, entry));
   return spawnSync(process.execPath, [helper,
     "--report-dir", options.reportDir, "--target", options.target, "--profile", options.profile,
     "--binary", options.binary, "--check-exit", String(options.exitCode), "--build-exit", String(overrides.buildExit ?? 0),
     "--build-log", path.join(test.directory, "build.log"), "--check-log", path.join(test.directory, "check.log"),
     "--member-entry", "entry.roc", "--compiler-version", overrides.compilerVersion ?? "unit-test", "--build-cwd", test.directory, "--build-batch-ns", "42", "--check-batch-ns", "7",
-    "--build-command", "roc", "build", ...(overrides.covered ? ["--fuzz"] : []), `--opt=${overrides.optimizer ?? "speed"}`, "--timings", "entry.roc", `--output=${test.binary}`,
+    "--build-command", "roc", "build", ...(overrides.covered ? ["--fuzz"] : []), `--opt=${overrides.optimizer ?? "speed"}`, "--timings", entry, `--output=${test.binary}`, ...(overrides.compilerFlags ?? []),
   ], { encoding: "utf8" });
 }
 try {
@@ -170,6 +172,19 @@ try {
     const validation = JSON.parse(fs.readFileSync(path.join(test.directory, "validation.json")));
     assert.equal(validation.passed, expected === 0);
     if (expected === 0) assert.equal(validation.build.optimizer, "size");
+    checks++;
+  }
+  const affected = { compilerVersion: "nightly-2026-11-24-ff5e544", entry: "FuzzRendering.roc" };
+  for (const [overrides, status] of [
+    [{ ...affected, compilerFlags: ["--specialize=no"] }, 0],
+    [affected, 1],
+    [{ ...affected, entry: "FuzzLifecycle.roc", compilerFlags: ["--specialize=no"] }, 0],
+    [{ ...affected, entry: "FuzzLifecycle.roc" }, 1],
+    [{ ...affected, entry: "entry.roc", compilerFlags: ["--specialize=no"] }, 1],
+    [{ ...affected, compilerVersion: "unit-test", compilerFlags: ["--specialize=no"] }, 1],
+  ]) {
+    const result = cli(fixture(), overrides);
+    assert.equal(result.status, status, result.stderr);
     checks++;
   }
   console.log(`Fixed-report transport contracts: ${checks} checks passed (no Roc compiler or property replay)`);

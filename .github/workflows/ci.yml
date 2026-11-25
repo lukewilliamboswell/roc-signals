@@ -42,14 +42,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           nightly=$(gh api repos/roc-lang/nightlies/releases/latest --jq .tag_name)
-          # TODO https://github.com/roc-lang/roc/issues/13372: remove this
-          # fallback when the nightly lowers nested record defaults again.
-          case "$nightly" in
-            nightly-2026-11-21-09f4dc3|nightly-2026-11-22-3350b1c|nightly-2026-11-23-b5c77fc)
-              echo "::warning::Roc $nightly hangs on nested record defaults (roc#13372). Testing on nightly-2026-11-18-a520eed."
-              nightly=nightly-2026-11-18-a520eed
-              ;;
-          esac
           echo "tag=$nightly" >> "$GITHUB_OUTPUT"
 
   # The pull-request gate, `check -- --without-fuzz --without-sizes`, as
@@ -82,7 +74,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@6c796f299012707d2e9bad23fd6449ed93f1f475
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@2b0ffc9c556f465759ca81055bb819c7e15624eb
         with:
           cache: 'true'
           cache-workload: engine
@@ -140,7 +132,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@6c796f299012707d2e9bad23fd6449ed93f1f475
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@2b0ffc9c556f465759ca81055bb819c7e15624eb
         with:
           cache: 'true'
           cache-workload: engine
@@ -191,7 +183,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@6c796f299012707d2e9bad23fd6449ed93f1f475
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@2b0ffc9c556f465759ca81055bb819c7e15624eb
         with:
           cache: 'true'
           cache-workload: engine
@@ -237,7 +229,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@6c796f299012707d2e9bad23fd6449ed93f1f475
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@2b0ffc9c556f465759ca81055bb819c7e15624eb
         with:
           cache: 'true'
           cache-workload: engine
@@ -369,7 +361,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@6c796f299012707d2e9bad23fd6449ed93f1f475
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@2b0ffc9c556f465759ca81055bb819c7e15624eb
         with:
           cache: 'true'
           cache-workload: site

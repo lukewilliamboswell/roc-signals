@@ -82,7 +82,7 @@ archive or the site:
 - [roc-lang/http 1.0.0](https://github.com/roc-lang/http/releases/tag/1.0.0),
   used by the scripts. Copyright © 2025 Richard Feldman and subsequent Roc
   authors; UPL Version 1.0.
-- [roc-blueprint 0.13.0](https://github.com/lukewilliamboswell/roc-blueprint/releases/tag/0.13.0),
+- [roc-blueprint 0.15.0-rc.1](https://github.com/lukewilliamboswell/roc-blueprint/releases/tag/0.15.0-rc.1),
   which evaluates `Blueprint.roc`. Copyright © 2026 Luke Boswell and
   subsequent authors; UPL Version 1.0.
 

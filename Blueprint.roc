@@ -14,7 +14,7 @@
 # tests the platform, the examples and the tests. `roc` is never pinned: CI
 # installs it with roc-lang/setup-roc, and a contributor installs the current
 # nightly as `roc`, so the environments expect it on PATH.
-app [config] { pf: platform "https://github.com/lukewilliamboswell/roc-blueprint/releases/download/0.13.0/DBtzmMfrSgt6nCGVAcZYCVPxWbhpqw3MXpm6sdQzMn4v.tar.zst" }
+app [config] { pf: platform "https://github.com/lukewilliamboswell/roc-blueprint/releases/download/0.15.0-rc.1/FwWWY6PczB7QsUoWKgaLTuBGGajLjfA4MhaLD36sJxrN.tar.zst" }
 
 import pf.Config
 import pf.Recipes
@@ -37,7 +37,7 @@ roc_docs_program = Fetch("roc-docs", Recipes.file("https://github.com/lukewillia
 # is pinned to it. roc-overlay packages each nightly as
 # `nix#rocpkgs.<tag>`; it is fetched directly here so no environment starts
 # Nix.
-roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-14-a87808d"))
+roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-24-ff5e544"))
 
 config = [
 	Name("roc-signals"),
@@ -105,7 +105,7 @@ zig : System -> Config.Download
 zig = |system| {
 	base = "https://ziglang.org/download/0.17.1"
 	match system {
-		"x86_64-linux" => Archive("${base}/zig-x86_64-linux-0.17.1.tar.xz", TarXz, "zig-x86_64-linux-0.17.1/zig")
+		"x86_64-linux" => Mirrored(Archive("https://pkg.hexops.org/zig/zig-x86_64-linux-0.17.1.tar.xz", TarXz, "zig-x86_64-linux-0.17.1/zig"), ["${base}/zig-x86_64-linux-0.17.1.tar.xz"])
 		"aarch64-linux" => Archive("${base}/zig-aarch64-linux-0.17.1.tar.xz", TarXz, "zig-aarch64-linux-0.17.1/zig")
 		"aarch64-darwin" => Archive("${base}/zig-aarch64-macos-0.17.1.tar.xz", TarXz, "zig-aarch64-macos-0.17.1/zig")
 		_ => Unavailable
