@@ -105,7 +105,7 @@ zig : System -> Config.Download
 zig = |system| {
 	base = "https://ziglang.org/download/0.17.1"
 	match system {
-		"x86_64-linux" => Archive("${base}/zig-x86_64-linux-0.17.1.tar.xz", TarXz, "zig-x86_64-linux-0.17.1/zig")
+		"x86_64-linux" => Mirrored(Archive("https://pkg.hexops.org/zig/zig-x86_64-linux-0.17.1.tar.xz", TarXz, "zig-x86_64-linux-0.17.1/zig"), ["${base}/zig-x86_64-linux-0.17.1.tar.xz"])
 		"aarch64-linux" => Archive("${base}/zig-aarch64-linux-0.17.1.tar.xz", TarXz, "zig-aarch64-linux-0.17.1/zig")
 		"aarch64-darwin" => Archive("${base}/zig-aarch64-macos-0.17.1.tar.xz", TarXz, "zig-aarch64-macos-0.17.1/zig")
 		_ => Unavailable
