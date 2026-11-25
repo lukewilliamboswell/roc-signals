@@ -1081,7 +1081,7 @@ remove a skip, delete its entry once a nightly fixes the defect, with the
 note in `design.md`'s compiler limitations; a nightly not listed already
 runs the spec.
 
-The tooling compiler is `nightly-2026-11-24-ff5e544`. The scripts that read
+The tooling compiler is `nightly-2026-11-25-d5a4f1e`. The scripts that read
 Roc source or markup import roc-parser, so `roc-stable` moves only to a
 nightly the pinned parser release checks on; toolchains before
 `nightly-2026-11-13-03dce41` cannot resolve the parser's nominal type
