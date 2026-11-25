@@ -174,18 +174,19 @@ try {
     if (expected === 0) assert.equal(validation.build.optimizer, "size");
     checks++;
   }
-  const affected = { compilerVersion: "nightly-2026-11-24-ff5e544", entry: "FuzzRendering.roc" };
-  for (const [overrides, status] of [
-    [{ ...affected, compilerFlags: ["--specialize=no"] }, 0],
-    [affected, 1],
-    [{ ...affected, entry: "FuzzLifecycle.roc", compilerFlags: ["--specialize=no"] }, 0],
-    [{ ...affected, entry: "FuzzLifecycle.roc" }, 1],
-    [{ ...affected, entry: "entry.roc", compilerFlags: ["--specialize=no"] }, 1],
-    [{ ...affected, compilerVersion: "unit-test", compilerFlags: ["--specialize=no"] }, 1],
-  ]) {
-    const result = cli(fixture(), overrides);
-    assert.equal(result.status, status, result.stderr);
-    checks++;
+  for (const compilerVersion of ["nightly-2026-11-24-ff5e544", "nightly-2026-11-25-d5a4f1e"]) {
+    for (const [overrides, status] of [
+      [{ entry: "FuzzRendering.roc", compilerFlags: ["--specialize=no"] }, 0],
+      [{ entry: "FuzzRendering.roc" }, 1],
+      [{ entry: "FuzzLifecycle.roc", compilerFlags: ["--specialize=no"] }, 0],
+      [{ entry: "FuzzLifecycle.roc" }, 1],
+      [{ entry: "entry.roc", compilerFlags: ["--specialize=no"] }, 1],
+      [{ entry: "FuzzRendering.roc", compilerVersion: "unit-test", compilerFlags: ["--specialize=no"] }, 1],
+    ]) {
+      const result = cli(fixture(), { compilerVersion, ...overrides });
+      assert.equal(result.status, status, result.stderr);
+      checks++;
+    }
   }
   console.log(`Fixed-report transport contracts: ${checks} checks passed (no Roc compiler or property replay)`);
 } finally { fs.rmSync(root, { recursive: true, force: true }); }

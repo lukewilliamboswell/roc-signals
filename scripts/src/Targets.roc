@@ -307,9 +307,10 @@ Targets := [].{
 	smoke_build_job : SpecSuite.Options, Fuzz -> Proc.Job
 	smoke_build_job = |o, t| {
 		build_args = ["build", "--opt=${Targets.fuzz_opt(o)}", "--timings", t.suite, "--output=${Targets.smoke_exe_of(o, t)}"]
-		# Bound this suite's compiler memory on hosted runners while keeping
-		# the speed optimizer and every replay.
-		args = if o.nightly == "nightly-2026-11-24-ff5e544" and ["FuzzRendering.roc", "FuzzLifecycle.roc"].contains(t.suite) {
+		# Bound compiler memory and compile time on hosted runners while
+		# keeping the speed optimizer and every replay. Related specialization
+		# costs are tracked in roc-lang/roc#13412 and roc-lang/roc#13413.
+		args = if ["nightly-2026-11-24-ff5e544", "nightly-2026-11-25-d5a4f1e"].contains(o.nightly) and ["FuzzRendering.roc", "FuzzLifecycle.roc"].contains(t.suite) {
 			build_args.append("--specialize=no")
 		} else {
 			build_args
